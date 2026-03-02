@@ -577,6 +577,28 @@ public class TagManager {
             }
         }
 
+        // 4) Placeholder-based requirements
+        List<TagDefinition.PlaceholderRequirement> phReqs = def.getPlaceholderRequirements();
+        if (phReqs != null && !phReqs.isEmpty()) {
+            for (TagDefinition.PlaceholderRequirement req : phReqs) {
+                if (req == null) continue;
+
+                String placeholder = req.getPlaceholder();
+                String op          = req.getOperator();
+                String expected    = req.getValue();
+
+                if (placeholder == null || op == null || expected == null) {
+                    // Malformed entry – treat as not met to avoid free bypass
+                    return false;
+                }
+
+                String actual = integrations.resolvePlaceholder(playerRef, placeholder);
+                if (!evaluatePlaceholderCondition(actual, op, expected)) {
+                    return false;
+                }
+            }
+        }
+
         // Item requirements intentionally NOT checked here.
         return true;
     }
@@ -610,6 +632,55 @@ public class TagManager {
         }
 
         return null; // ok
+    }
+
+    private boolean evaluatePlaceholderCondition(@Nullable String actual,
+                                                 @Nonnull String operator,
+                                                 @Nonnull String expected) {
+        if (actual == null) {
+            // For any positive requirement, missing placeholder → fail
+            return false;
+        }
+
+        String op = operator.trim();
+        String exp = expected.trim();
+
+        // Try numeric comparison first if both sides look like numbers
+        Double actualNum = tryParseDouble(actual);
+        Double expNum    = tryParseDouble(exp);
+
+        if (actualNum != null && expNum != null) {
+            switch (op) {
+                case "==": return Double.compare(actualNum, expNum) == 0;
+                case "!=": return Double.compare(actualNum, expNum) != 0;
+                case ">":  return actualNum >  expNum;
+                case ">=": return actualNum >= expNum;
+                case "<":  return actualNum <  expNum;
+                case "<=": return actualNum <= expNum;
+            }
+        }
+
+        // Fallback to case-insensitive string comparison
+        String a = actual.trim();
+        String b = exp;
+
+        switch (op) {
+            case "==": return a.equalsIgnoreCase(b);
+            case "!=": return !a.equalsIgnoreCase(b);
+            case "contains": return a.toLowerCase(Locale.ROOT).contains(b.toLowerCase(Locale.ROOT));
+            default:
+                // Unknown op -> fail safe
+                return false;
+        }
+    }
+
+    @Nullable
+    private static Double tryParseDouble(String s) {
+        try {
+            return Double.parseDouble(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**
@@ -1338,5 +1409,28 @@ public class TagManager {
                         .log("[MysticNameTags] Failed to refresh nameplate after tag change for " + uuid);
             }
         }
+    }
+
+    /**
+     * Returns all TagDefinitions this player owns.
+     */
+    @Nonnull
+    public List<TagDefinition> getOwnedTags(@Nonnull UUID uuid) {
+        PlayerTagData data = getOrLoad(uuid);
+        if (data == null) {
+            return Collections.emptyList();
+        }
+
+        List<TagDefinition> owned = new ArrayList<>();
+        for (TagDefinition def : tags.values()) {
+            if (def == null) continue;
+            String id = def.getId();
+            if (id == null || id.isBlank()) continue;
+
+            if (data.owns(id.toLowerCase(Locale.ROOT))) {
+                owned.add(def);
+            }
+        }
+        return owned;
     }
 }
