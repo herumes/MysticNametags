@@ -32,6 +32,9 @@ import java.util.logging.Level;
  *     "custom.player_kills"
  *     "mined.hytale:stone"
  *     "killed.Player"
+ *
+ * NOTE: Playtime is now tracked separately by PlaytimeService
+ *       using the stat key "custom.playtime_seconds".
  */
 public final class PlayerStatManager implements StatProvider {
 
@@ -42,6 +45,12 @@ public final class PlayerStatManager implements StatProvider {
             .create();
 
     private static volatile PlayerStatManager INSTANCE;
+
+    // Persistent stats cache (loaded from backend)
+    private final Map<UUID, PlayerStatsData> cache = new ConcurrentHashMap<>();
+
+    // Session-only, in-memory stats (for live placeholders)
+    private final Map<UUID, PlayerStatsData> sessionStats = new ConcurrentHashMap<>();
 
     /**
      * Initialize and register as StatProvider with the integration manager.
@@ -86,12 +95,6 @@ public final class PlayerStatManager implements StatProvider {
     // --------------------------------------------------
 
     private final PlayerStatStore store;
-
-    // Persistent stats cache (loaded from backend)
-    private final Map<UUID, PlayerStatsData> cache = new ConcurrentHashMap<>();
-
-    // Session-only, in-memory stats (for live placeholders)
-    private final Map<UUID, PlayerStatsData> sessionStats = new ConcurrentHashMap<>();
 
     private PlayerStatManager() {
         MysticNameTagsPlugin plugin = MysticNameTagsPlugin.getInstance();
@@ -186,6 +189,8 @@ public final class PlayerStatManager implements StatProvider {
 
     /**
      * Player joined: reset session-only stats.
+     *
+     * NOTE: Playtime is NOT tracked here anymore; that is handled by PlaytimeService.
      */
     public void onPlayerJoin(@Nonnull UUID uuid) {
         sessionStats.put(uuid, new PlayerStatsData());
@@ -193,10 +198,15 @@ public final class PlayerStatManager implements StatProvider {
     }
 
     /**
-     * Player quit: flush stats and clear session cache.
+     * Player quit: drop session-only stats and persist cached data.
+     *
+     * Playtime accumulation is handled externally by PlaytimeService.
      */
     public void onPlayerQuit(@Nonnull UUID uuid) {
+        // drop any ephemeral session stats
         sessionStats.remove(uuid);
+
+        // persist updated data
         save(uuid);
     }
 
