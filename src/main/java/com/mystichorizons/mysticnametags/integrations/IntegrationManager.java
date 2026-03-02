@@ -6,7 +6,10 @@ import com.hypixel.hytale.server.core.universe.PlayerRef;
 import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.integrations.economy.*;
 import com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingNameplateSystem;
+import com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingStatBridge;
 import com.mystichorizons.mysticnametags.integrations.permissions.*;
+import com.mystichorizons.mysticnametags.placeholders.HelpchPlaceholderHook;
+import com.mystichorizons.mysticnametags.playtime.PlaytimeService;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -20,7 +23,11 @@ public class IntegrationManager {
     private static final HytaleLogger LOGGER = HytaleLogger.forEnclosingClass();
 
     @Nullable private EndlessLevelingNameplateSystem endlessNameplateSystem;
-    @Nullable private PlaytimeProvider playtimeProvider;
+    @Nonnull
+    private final PlaytimeService playtimeService;
+
+    @Nonnull
+    private PlaytimeProvider playtimeProvider;
     @Nullable private CoinsAndMarketsBackend coinsAndMarketsBackend;
     @Nullable private StatProvider statProvider;
     @Nullable private ItemRequirementHandler itemRequirementHandler;
@@ -32,6 +39,16 @@ public class IntegrationManager {
     @Nullable
     public StatProvider getStatProvider() {
         return statProvider;
+    }
+
+    @Nonnull
+    public PlaytimeProvider getPlaytimeProvider() {
+        return playtimeProvider;
+    }
+
+    @Nonnull
+    public PlaytimeService getPlaytimeService() {
+        return playtimeService;
     }
 
     private java.util.List<EconomyBackend> ledgerBackends = java.util.List.of();
@@ -63,10 +80,68 @@ public class IntegrationManager {
     private boolean loggedEconomyStatus = false;
 
     public void init() {
+        setupPlaytimeBackend();
         setupPermissionBackends();
         setupPrefixBackends();
         setupEconomyBackends();
         setupItemRequirementHandler();
+    }
+
+    public IntegrationManager(@Nonnull PlaytimeService playtimeService) {
+        this.playtimeService = playtimeService;
+
+        // Default to our internal playtime provider
+        this.playtimeProvider = new InternalPlaytimeProvider(playtimeService);
+    }
+
+    // ----------------------------------------------------------------
+    // Playtime backend selection
+    // ----------------------------------------------------------------
+    private void setupPlaytimeBackend() {
+        String mode = Settings.get().getPlaytimeProviderMode(); // AUTO / INTERNAL / ZIB_PLAYTIME / NONE
+
+        // Default from constructor is InternalPlaytimeProvider(playtimeService)
+
+        // NONE = disable playtime requirements (always pass)
+        if ("NONE".equals(mode)) {
+            this.playtimeProvider = uuid -> Long.MAX_VALUE;
+            LOGGER.at(Level.INFO)
+                    .log("[MysticNameTags] Playtime requirements disabled (playtimeProvider=NONE).");
+            return;
+        }
+
+        // AUTO or ZIB_PLAYTIME: try Zid's Playtime first
+        if ("ZIB_PLAYTIME".equals(mode) || "AUTO".equals(mode)) {
+            try {
+                // Only attempt if the class is present
+                Class.forName("com.zib.playtime.api.PlaytimeAPI");
+
+                com.zib.playtime.api.PlaytimeAPI api = com.zib.playtime.api.PlaytimeAPI.get();
+                if (api != null) {
+                    this.playtimeProvider = new ZibPlaytimeProvider(api);
+                    LOGGER.at(Level.INFO)
+                            .log("[MysticNameTags] Using Zid's Playtime mod as playtime provider.");
+                    return;
+                } else {
+                    LOGGER.at(Level.WARNING)
+                            .log("[MysticNameTags] Zid Playtime API returned null; falling back to internal playtime provider.");
+                }
+            } catch (ClassNotFoundException e) {
+                if ("ZIB_PLAYTIME".equals(mode)) {
+                    LOGGER.at(Level.WARNING)
+                            .log("[MysticNameTags] playtimeProvider=ZIB_PLAYTIME but Zid Playtime mod not found; falling back to internal provider.");
+                }
+                // if AUTO, we silently fall back
+            } catch (Throwable t) {
+                LOGGER.at(Level.WARNING)
+                        .withCause(t)
+                        .log("[MysticNameTags] Failed to initialize Zid Playtime integration; falling back to internal provider.");
+            }
+        }
+
+        // INTERNAL or AUTO (fallback): keep the default internal provider
+        LOGGER.at(Level.INFO)
+                .log("[MysticNameTags] Using internal stat-based playtime provider (mode=" + mode + ").");
     }
 
     // ----------------------------------------------------------------
@@ -607,12 +682,22 @@ public class IntegrationManager {
 
     public @Nullable Integer getPlaytimeMinutes(UUID uuid) {
         if (playtimeProvider == null) return null;
-        try { return playtimeProvider.getPlaytimeMinutes(uuid); }
-        catch (Throwable t) { return null; }
+        try {
+            long minutes = playtimeProvider.getPlaytimeMinutes(uuid);
+            if (minutes <= 0L) {
+                return 0;
+            }
+            if (minutes > Integer.MAX_VALUE) {
+                return Integer.MAX_VALUE;
+            }
+            return (int) minutes;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
-    public void setPlaytimeProvider(@Nullable StatProvider statProvider) {
-        this.playtimeProvider = (PlaytimeProvider) statProvider;
+    public void setPlaytimeProvider(@Nullable PlaytimeProvider playtimeProvider) {
+        this.playtimeProvider = playtimeProvider;
     }
 
     // ----------------------------------------------------------------
@@ -620,22 +705,47 @@ public class IntegrationManager {
     // ----------------------------------------------------------------
 
     /**
-     * Expose stat values for tag requirements.
+     * Generic stat lookup for tag requirements and UI.
      *
-     * @return current stat value or null if backend missing / error / zero.
+     * Supports:
+     *  - Internal PlayerStatManager-backed keys (e.g. "custom.damage_dealt")
+     *  - EndlessLeveling-backed keys (keys starting with "endlessleveling.")
      */
     @Nullable
     public Integer getStatValue(@Nonnull UUID uuid, @Nonnull String key) {
-        if (statProvider == null) {
+        if (key == null || key.isBlank()) {
+            return null;
+        }
+
+        String trimmed = key.trim();
+
+        // 1) EndlessLeveling bridge (prefix-based)
+        if (trimmed.startsWith("endlessleveling.")) {
+            try {
+                Integer val = EndlessLevelingStatBridge.getStatValue(uuid, trimmed);
+                if (val != null) {
+                    return val;
+                }
+            } catch (Throwable t) {
+                LOGGER.at(Level.FINE)
+                        .withCause(t)
+                        .log("[MysticNameTags] EndlessLeveling stat bridge error for %s (key=%s)", uuid, trimmed);
+                // Fall through to internal stats if EndlessLeveling is missing or fails
+            }
+        }
+
+        // 2) Primary StatProvider (internal PlayerStatManager)
+        StatProvider provider = this.statProvider;
+        if (provider == null) {
             return null;
         }
 
         try {
-            return statProvider.getStatValue(uuid, key);
+            return provider.getStatValue(uuid, trimmed);
         } catch (Throwable t) {
-            LOGGER.at(Level.WARNING).withCause(t)
-                    .log("[MysticNameTags] StatProvider threw while resolving stat '%s' for %s",
-                            key, uuid);
+            LOGGER.at(Level.FINE)
+                    .withCause(t)
+                    .log("[MysticNameTags] StatProvider error for %s (key=%s)", uuid, trimmed);
             return null;
         }
     }
@@ -696,5 +806,30 @@ public class IntegrationManager {
 
     public void setItemRequirementHandler(@Nullable ItemRequirementHandler handler) {
         this.itemRequirementHandler = handler;
+    }
+
+    @Nullable
+    public String resolvePlaceholder(@Nonnull PlayerRef playerRef,
+                                     @Nonnull String placeholder) {
+        String input = placeholder.trim();
+        if (input.isEmpty()) return null;
+
+        String value = null;
+
+        try {
+            // 1) WiFlow first
+            value = WiFlowPlaceholderSupport.applySingle(playerRef, input);
+        } catch (Throwable ignored) {}
+
+        try {
+            if (value == null || value.equals(input)) {
+                // 2) HelpChat
+                value = HelpchPlaceholderHook.resolve(playerRef, input);
+            }
+        } catch (Throwable ignored) {}
+
+        if (value == null) return null;
+        value = value.trim();
+        return value.isEmpty() ? null : value;
     }
 }
