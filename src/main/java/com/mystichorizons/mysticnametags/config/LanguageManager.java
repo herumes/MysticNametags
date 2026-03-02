@@ -63,8 +63,9 @@ public final class LanguageManager {
 
         // 2) Ensure UI overrides exist for en_US
         // These paths are what you pass into cmd.append(), *not* the Common/UI/Custom prefix
-        ensureUiOverrideExists("en_US", "mysticnametags/Dashboard.ui");
-        ensureUiOverrideExists("en_US", "mysticnametags/Tags.ui");
+        ensureUiOverrideExists("en_US", "Common/UI/Custom/mysticnametags/Dashboard.ui");
+        ensureUiOverrideExists("en_US", "Common/UI/Custom/mysticnametags/Tags.ui");
+        ensureUiOverrideExists("en_US", "Common/UI/Custom/mysticnametags/OwnedTags.ui");
 
         // 3) Load fallback cache once (now guaranteed complete)
         this.fallbackEn = loadMessagesToMap("en_US");
@@ -76,8 +77,10 @@ public final class LanguageManager {
         ensureMessagesUpToDate(activeLocale, defaults, false);
 
         // 6) Export UI overrides for active locale (so users can edit immediately)
-        ensureUiOverrideExists(activeLocale, "mysticnametags/Dashboard.ui");
-        ensureUiOverrideExists(activeLocale, "mysticnametags/Tags.ui");
+        ensureUiOverrideExists(activeLocale, "Common/UI/Custom/mysticnametags/Dashboard.ui");
+        ensureUiOverrideExists(activeLocale, "Common/UI/Custom/mysticnametags/Tags.ui");
+        ensureUiOverrideExists(activeLocale, "Common/UI/Custom/mysticnametags/OwnedTags.ui");
+
 
         // 7) Load active locale
         this.messages = loadMessagesToMap(activeLocale);
@@ -310,7 +313,10 @@ public final class LanguageManager {
 
         defaults.put("ui.tags.req_permission_title", "Requirements");
         defaults.put("ui.tags.req_playtime_title", "Playtime Required");
+        // OLD simple value (kept for backwards compatibility / other usages)
         defaults.put("ui.tags.req_playtime_value", "{minutes} minutes");
+        // NEW UX: Playtime: current / required minutes
+        defaults.put("ui.tags.req_playtime_progress", "Playtime: {current} / {required} minutes");
         defaults.put("ui.tags.req_owned_title", "Owned Tags Required");
         defaults.put("ui.tags.req_purchase_missing_econ_suffix", "(economy disabled)");
 
@@ -322,6 +328,24 @@ public final class LanguageManager {
         defaults.put("ui.tags.req_stat_title", "Stat Required");
         defaults.put("ui.tags.req_stat_value", "{key}: {value}+");
         defaults.put("ui.tags.req_items_title", "Items Required");
+
+        // ----- Pretty names for common stats (used in requirements panel) -----
+        defaults.put("ui.stats.custom.kills_total", "Total Kills");
+        defaults.put("ui.stats.custom.deaths_total", "Total Deaths");
+        defaults.put("ui.stats.custom.blocks_broken_total", "Blocks Broken");
+        defaults.put("ui.stats.custom.blocks_placed_total", "Blocks Placed");
+        defaults.put("ui.stats.custom.damage_dealt", "Damage Dealt");
+        defaults.put("ui.stats.custom.damage_taken", "Damage Taken");
+
+        // EndlessLeveling-specific pretty names
+        defaults.put("ui.stats.endlessleveling.level", "Endless Level");
+        defaults.put("ui.stats.endlessleveling.xp", "Endless XP");
+        defaults.put("ui.stats.endlessleveling.skill_prefix", "Skill Level: {name}");
+
+        // Generic prefixes for dynamic stats
+        defaults.put("ui.stats.prefix.kills", "Kills: {name}");
+        defaults.put("ui.stats.prefix.mined", "Blocks Mined: {name}");
+        defaults.put("ui.stats.prefix.placed", "Blocks Placed: {name}");
 
         // ---------------- DASHBOARD UI (status bar / info boxes) ----------------
 
@@ -449,6 +473,7 @@ public final class LanguageManager {
         defaults.put("tags.not_enough_money", "You cannot afford that tag.");
         defaults.put("tags.transaction_failed", "Transaction failed. Please try again.");
         defaults.put("tags.requirements_not_met", "You do not meet the requirements for that tag.");
+        defaults.put("tags.equip_cooldown", "You must wait {seconds}s before equipping another tag.");
 
         // /tags help
         defaults.put("cmd.help.header", "&b=== MysticNameTags Commands ===");
@@ -479,6 +504,11 @@ public final class LanguageManager {
         defaults.put("cmd.tags.no_account_id", "&cError: &7Could not determine your account id.");
         defaults.put("cmd.tags.opening", "&7[&bMysticNameTags&7] &fOpening &bTag Selector&f...");
         defaults.put("cmd.tags.open_error", "&cError opening tag selector: &7{error}");
+
+        // /tags owned (owned-tags UI)
+        defaults.put("cmd.tags.owned_disabled", "&cThe owned tags menu is disabled in settings.");
+        defaults.put("cmd.tags.owned_opening", "&7[&bMysticNameTags&7] &fOpening &bOwned Tags&f...");
+        defaults.put("cmd.tags.owned_open_error", "&cError opening owned tags selector: &7{error}");
 
         // /tags info
         defaults.put("cmd.info.not_loaded", "&cMysticNameTags plugin instance not available.");
