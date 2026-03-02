@@ -1,7 +1,7 @@
 {
   "Group": "MysticHorizons",
   "Name": "MysticNameTags",
-  "Version": "1.1.5",
+  "Version": "1.1.6",
   "Description": "A Hytale mod that customizes nameplates and supports luckperms, permissionsplus, prefixplus, vaultunlocked, economysystem, wiflow's placeholderapi, placeholders, and custom tags.",
   "Authors": [
     {
@@ -22,7 +22,8 @@
     "LuckPerms:LuckPerms": "*",
     "PermissionsPlus:PermissionsPlus": "*",
     "Zuxaw:RPGLeveling": "*",
-    "com.airijko:endlessleveling": "*"
+    "com.airijko:endlessleveling": "*",
+    "Playtime:Playtime": "*"
   },
   "IncludesAssetPack": true
 }
