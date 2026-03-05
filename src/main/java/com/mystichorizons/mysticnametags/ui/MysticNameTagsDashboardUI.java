@@ -5,7 +5,6 @@ import com.hypixel.hytale.codec.KeyedCodec;
 import com.hypixel.hytale.codec.builder.BuilderCodec;
 import com.hypixel.hytale.component.Ref;
 import com.hypixel.hytale.component.Store;
-import com.hypixel.hytale.logger.HytaleLogger;
 import com.hypixel.hytale.protocol.packets.interface_.CustomPageLifetime;
 import com.hypixel.hytale.protocol.packets.interface_.CustomUIEventBindingType;
 import com.hypixel.hytale.protocol.packets.interface_.NotificationStyle;
@@ -300,8 +299,12 @@ public class MysticNameTagsDashboardUI extends InteractiveCustomUIPage<MysticNam
                     String coloredTag = manager.getColoredActiveTag(uuid);
                     String plainTag   = manager.getPlainActiveTag(uuid);
 
-                    boolean lp          = integrations.isLuckPermsAvailable();
-                    boolean permsPlus   = integrations.isPermissionsPlusActive();
+                    boolean lp         = integrations.isLuckPermsAvailable();
+                    boolean hyperPerms = integrations.isHyperPermsAvailable();
+                    boolean permsPlus  = integrations.isPermissionsPlusActive();
+
+                    String permBackend = resolvePermissionBackendName(integrations);
+
                     boolean econPrimary = integrations.isPrimaryEconomyAvailable();
                     boolean econEcoTale = integrations.isEcoTaleAvailable();
                     boolean econVault   = integrations.isVaultAvailable();
@@ -328,7 +331,9 @@ public class MysticNameTagsDashboardUI extends InteractiveCustomUIPage<MysticNam
                             .append("  Tags Loaded: ").append(manager.getTagCount()).append('\n')
                             .append("  Active Tag (colored): ").append(coloredTag).append('\n')
                             .append("  Active Tag (plain):   ").append(plainTag).append('\n')
+                            .append("  Permission Backend: ").append(permBackend).append('\n')
                             .append("  LuckPerms: ").append(lp).append('\n')
+                            .append("  HyperPerms: ").append(hyperPerms).append('\n')
                             .append("  PermissionsPlus active: ").append(permsPlus).append('\n')
                             .append("  Economy: primary=").append(econPrimary)
                             .append(", ecoTale=").append(econEcoTale)
@@ -401,8 +406,10 @@ public class MysticNameTagsDashboardUI extends InteractiveCustomUIPage<MysticNam
         TagManager tagManager = TagManager.get();
         IntegrationManager integrations = tagManager.getIntegrations();
 
-        boolean lp          = integrations.isLuckPermsAvailable();
-        boolean permsPlus   = integrations.isPermissionsPlusActive();
+        boolean lp         = integrations.isLuckPermsAvailable();
+        boolean hyperPerms = integrations.isHyperPermsAvailable();
+        boolean permsPlus  = integrations.isPermissionsPlusActive();
+
         boolean econPrimary = integrations.isPrimaryEconomyAvailable();
         boolean econEcoTale = integrations.isEcoTaleAvailable();
         boolean econVault   = integrations.isVaultAvailable();
@@ -412,17 +419,37 @@ public class MysticNameTagsDashboardUI extends InteractiveCustomUIPage<MysticNam
         boolean wiFlowPlaceholders = settings.isWiFlowPlaceholdersEnabled();
         boolean helpchPlaceholders = settings.isHelpchPlaceholderApiEnabled();
 
-        // --- Integrations summary ---
-        String luckPermsText = lp
-                ? lang.tr("dashboard.integration_luckperms")
-                : lang.tr("dashboard.integration_luckperms_none");
-
+        // --- Integrations summary (Permissions + Economy) ---
         StringBuilder integrationsText = new StringBuilder();
         integrationsText.append(lang.tr("dashboard.integrations_prefix")).append(" ");
-        integrationsText.append(luckPermsText);
 
-        if (permsPlus) {
-            integrationsText.append(" ").append(lang.tr("dashboard.integrations_plus_permissionsplus"));
+        String permBackendName = resolvePermissionBackendName(integrations);
+
+        // If backend name is known, show it as the "truth" (active backend).
+        if (permBackendName != null && !permBackendName.isBlank() && !"None".equalsIgnoreCase(permBackendName)) {
+            integrationsText.append(permBackendName);
+        } else {
+            // Fallback: show detections
+            boolean any = false;
+
+            if (hyperPerms) {
+                integrationsText.append("HyperPerms");
+                any = true;
+            }
+            if (lp) {
+                if (any) integrationsText.append(" + ");
+                integrationsText.append(lang.tr("dashboard.integration_luckperms"));
+                any = true;
+            }
+            if (permsPlus) {
+                if (any) integrationsText.append(" + ");
+                integrationsText.append("PermissionsPlus");
+                any = true;
+            }
+            if (!any) {
+                // No lang key required
+                integrationsText.append("None");
+            }
         }
 
         integrationsText.append(" | ").append(lang.tr("dashboard.integrations_economy_prefix")).append(" ");
@@ -479,6 +506,20 @@ public class MysticNameTagsDashboardUI extends InteractiveCustomUIPage<MysticNam
         commands.set("#PlaceholderBackendsLabel.Text", placeholderText.toString());
 
         populateResourceStats(commands);
+    }
+
+    private static String resolvePermissionBackendName(@Nonnull IntegrationManager integrations) {
+        try {
+            var backend = integrations.getPermissionsBackend();
+            if (backend == null) return "None";
+            try {
+                String name = backend.getBackendName();
+                if (name != null && !name.isBlank()) return name;
+            } catch (Throwable ignored) { }
+            return backend.getClass().getSimpleName();
+        } catch (Throwable t) {
+            return "None";
+        }
     }
 
     private String buildStorageLabel(LanguageManager lang, Settings settings, StorageBackend backend) {
