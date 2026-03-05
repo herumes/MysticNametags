@@ -8,6 +8,7 @@ import com.hypixel.hytale.server.core.universe.PlayerRef;
 import com.mystichorizons.mysticnametags.MysticNameTagsPlugin;
 import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.integrations.IntegrationManager;
+import com.mystichorizons.mysticnametags.nameplate.GlyphNameplateManager;
 import com.mystichorizons.mysticnametags.nameplate.NameplateTextResolver;
 import com.mystichorizons.mysticnametags.util.ColorFormatter;
 import com.hypixel.hytale.server.core.universe.world.World;
@@ -923,25 +924,31 @@ public class TagManager {
      * Rebuild and apply the plain nameplate for this player if it changed.
      * Entry point for join, tag changes, rank changes, etc.
      */
+    /**
+     * Rebuild and apply the nameplate for this player if it changed.
+     * Entry point for join, tag changes, rank changes, etc.
+     */
     public void refreshNameplate(@Nonnull PlayerRef playerRef,
                                  @Nonnull World world) {
+
         UUID uuid = playerRef.getUuid();
         String baseName = playerRef.getUsername();
+        if (baseName == null) baseName = "Player";
 
-        // Build final nameplate text (rank/name/tag) using config format,
-        // optional WiFlow + helpch placeholders, then colorization.
-        String rank = null;
-        String tag  = null;
-
+        // If nameplates are disabled: restore vanilla and remove glyph overlay (if any).
         if (!Settings.get().isNameplatesEnabled()) {
-            // nameplates disabled: restore vanilla text and stop
+            String finalBaseName = baseName;
             world.execute(() -> {
                 try {
                     Store<EntityStore> store = world.getEntityStore().getStore();
                     Ref<EntityStore> ref = playerRef.getReference();
                     if (ref == null || !ref.isValid()) return;
 
-                    NameplateManager.get().restore(uuid, store, ref, baseName);
+                    NameplateManager.get().restore(uuid, store, ref, finalBaseName);
+
+                    // Remove glyph overlay entities (safe even if none)
+                    GlyphNameplateManager.get().remove(uuid, world, store);
+
                 } catch (Throwable ignored) {}
             });
 
@@ -949,31 +956,33 @@ public class TagManager {
             return;
         }
 
-        if (uuid != null) {
-            // Unified prefix backend (PrefixesPlus -> LuckPerms -> none)
-            rank = integrations.getPrimaryPrefix(uuid);
+        // Build rank + tag (colored source)
+        String rank = null;
+        String tag  = null;
 
-            // BEFORE:
-            // TagDefinition active = getEquipped(uuid);
+        rank = integrations.getPrimaryPrefix(uuid);
+        TagDefinition active = resolveActiveOrDefaultTag(uuid);
+        if (active != null) tag = active.getDisplay();
 
-            // AFTER: use default tag when nothing is equipped
-            TagDefinition active = resolveActiveOrDefaultTag(uuid);
-            if (active != null) {
-                // Raw display string (may contain placeholders + color codes)
-                tag = active.getDisplay();
-            }
-        }
+        // This is the "full" formatted text, may contain &#RRGGBB or <#RRGGBB>
+        String resolvedColored = NameplateTextResolver.build(playerRef, rank, baseName, tag);
 
-        String built = NameplateTextResolver.build(playerRef, rank, baseName, tag);
+        // Plain fallback for vanilla Nameplate component
+        String plainFallback = ColorFormatter.stripFormatting(resolvedColored).trim();
 
-        // Nameplate component: NO colors supported yet
-        String finalText = ColorFormatter.stripFormatting(built).trim();
+        boolean glyphEnabled = Settings.get().isExperimentalGlyphNameplatesEnabled();
 
-        // Cache / compare the PLAIN text (not colored)
-        String previous = lastNameplateText.put(uuid, finalText);
-        if (previous != null && previous.equals(finalText)) {
+        // IMPORTANT:
+        // - If glyph is enabled, cache/compare COLORED text so color-only changes rebuild glyphs.
+        // - Otherwise cache/compare PLAIN text to avoid spamming vanilla.
+        String compareKey = glyphEnabled ? resolvedColored : plainFallback;
+
+        String previous = lastNameplateText.put(uuid, compareKey);
+        if (previous != null && previous.equals(compareKey)) {
             return;
         }
+
+        String finalBaseName = baseName;
 
         world.execute(() -> {
             try {
@@ -981,21 +990,32 @@ public class TagManager {
                 Store<EntityStore> store = entityStore.getStore();
 
                 Ref<EntityStore> ref = playerRef.getReference();
-                if (ref == null || !ref.isValid()) {
-                    return;
+                if (ref == null || !ref.isValid()) return;
+
+                if (glyphEnabled) {
+
+                    // Hide vanilla to prevent double-render (glyph will show the "real" text).
+                    NameplateManager.get().apply(uuid, store, ref, "");
+
+                    // Glyph overlay uses colored text
+                    GlyphNameplateManager.get().apply(uuid, world, store, ref, resolvedColored);
+
+                } else {
+
+                    // Normal vanilla-only
+                    NameplateManager.get().apply(uuid, store, ref, plainFallback);
+
+                    // Ensure glyph entities are removed if switching off
+                    GlyphNameplateManager.get().remove(uuid, world, store);
                 }
 
-                NameplateManager.get().apply(uuid, store, ref, finalText);
-
-                // IMPORTANT: if EndlessLeveling nameplates are enabled,
-                // force its cache to refresh so [Lvl] doesn't "disappear" after /tags.
                 if (Settings.get().isEndlessLevelingNameplatesEnabled()) {
                     integrations.invalidateEndlessLevelingNameplate(uuid);
                 }
 
             } catch (Exception e) {
                 LOGGER.at(Level.WARNING).withCause(e)
-                        .log("[MysticNameTags] Failed to refresh nameplate for %s", baseName);
+                        .log("[MysticNameTags] Failed to refresh nameplate for %s", finalBaseName);
             }
         });
     }
@@ -1085,8 +1105,12 @@ public class TagManager {
         onlineWorlds.remove(uuid);
         forgetNameplate(uuid);
         clearCanUseCache(uuid);
-        // Also clear the NameplateManager cache so restore() never sees stale values
+
+        // Clear vanilla cache
         NameplateManager.get().forget(uuid);
+
+        // Clear glyph cache (entities will be removed on next world-thread call; cache at least won’t leak)
+        GlyphNameplateManager.get().forget(uuid);
     }
 
     @Nullable
