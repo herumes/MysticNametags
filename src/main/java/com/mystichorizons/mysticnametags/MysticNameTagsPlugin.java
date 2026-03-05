@@ -43,6 +43,7 @@ public class MysticNameTagsPlugin extends JavaPlugin {
     private static MysticNameTagsPlugin instance;
 
     private ScheduledExecutorService levelScheduler;
+    private ScheduledExecutorService glyphScheduler;
 
     private IntegrationManager integrations;
     private UpdateChecker updateChecker;
@@ -246,6 +247,9 @@ public class MysticNameTagsPlugin extends JavaPlugin {
 
         // RPGLeveling nameplate refresher (lazy-guarded by config + API checks)
         startLevelSchedulerIfNeeded();
+
+        // Glyph nameplate follow refresher
+        startGlyphFollowSchedulerIfNeeded();
     }
 
     @Override
@@ -256,6 +260,11 @@ public class MysticNameTagsPlugin extends JavaPlugin {
             stopLevelScheduler();
         } catch (Throwable ignored) {
             LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop level scheduler");
+        }
+        try {
+            stopGlyphFollowScheduler();
+        } catch (Throwable ignored) {
+            LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop glyph follow scheduler");
         }
         try {
             if (playtimeService != null) {
@@ -382,6 +391,8 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         // 5) Restart RPGLeveling scheduler based on *current* settings
         stopLevelScheduler();
         startLevelSchedulerIfNeeded();
+        stopGlyphFollowScheduler();
+        startGlyphFollowSchedulerIfNeeded();
 
         LOGGER.at(Level.INFO).log("[MysticNameTags] Reload complete.");
     }
@@ -423,6 +434,49 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         } catch (Throwable t) {
             LOGGER.at(Level.WARNING).withCause(t)
                     .log("[MysticNameTags] Failed to register EndlessLeveling integration.");
+        }
+    }
+
+    private void startGlyphFollowSchedulerIfNeeded() {
+        if (!Settings.get().isExperimentalGlyphNameplatesEnabled()) {
+            LOGGER.at(Level.INFO).log("[MysticNameTags] Glyph nameplates disabled; not starting glyph scheduler.");
+            return;
+        }
+
+        if (glyphScheduler != null && !glyphScheduler.isShutdown()) return;
+
+        int ticks = Settings.get().getExperimentalGlyphUpdateTicks();
+        long periodMs = Math.max(1, ticks) * 50L;
+
+        glyphScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "MysticNameTags-GlyphFollow");
+            t.setDaemon(true);
+            return t;
+        });
+
+        glyphScheduler.scheduleAtFixedRate(
+                new com.mystichorizons.mysticnametags.nameplate.GlyphNameplateFollowTask(),
+                periodMs,
+                periodMs,
+                TimeUnit.MILLISECONDS
+        );
+
+        LOGGER.at(Level.INFO).log("[MysticNameTags] Started glyph follow scheduler (every " + periodMs + "ms).");
+    }
+
+    private void stopGlyphScheduler() {
+        if (glyphScheduler != null) {
+            try { glyphScheduler.shutdownNow(); } catch (Throwable ignored) {}
+            glyphScheduler = null;
+            LOGGER.at(Level.INFO).log("[MysticNameTags] Stopped glyph follow scheduler.");
+        }
+    }
+
+    private void stopGlyphFollowScheduler() {
+        if (glyphScheduler != null) {
+            try { glyphScheduler.shutdownNow(); } catch (Throwable ignored) {}
+            glyphScheduler = null;
+            LOGGER.at(Level.INFO).log("[MysticNameTags] Stopped glyph follow scheduler.");
         }
     }
 }
