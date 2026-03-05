@@ -24,29 +24,20 @@ public class LevelNameplateRefreshTask implements Runnable {
     @Override
     public void run() {
         // Config + availability guard
-        if (!Settings.get().isRpgLevelingNameplatesEnabled()) {
-            return;
-        }
-        if (!MysticNameTagsPlugin.isRpgLevelingAvailable()) {
-            return;
-        }
+        if (!Settings.get().isRpgLevelingNameplatesEnabled()) return;
+        if (!MysticNameTagsPlugin.isRpgLevelingAvailable()) return;
 
         Universe universe = Universe.get();
-        if (universe == null) {
-            return;
-        }
+        if (universe == null) return;
 
         RPGLevelingAPI api = RPGLevelingAPI.get();
-        if (api == null) {
-            return;
-        }
+        if (api == null) return;
 
         TagManager tagManager = TagManager.get();
+        if (tagManager == null) return;
 
         for (World world : universe.getWorlds().values()) {
             if (world == null || !world.isAlive()) continue;
-
-            // Ensure we run the component writes on the world thread
             world.execute(() -> refreshWorld(world, tagManager, api));
         }
     }
@@ -70,30 +61,38 @@ public class LevelNameplateRefreshTask implements Runnable {
             String baseName = playerRef.getUsername();
             if (baseName == null) baseName = "Player";
 
-            // Build the "rank + tag" piece using MysticNameTags (plain text for nameplate)
-            String plainNameplate = tagManager.buildPlainNameplate(playerRef, baseName, uuid);
-
-            int level = 1; // sensible default
-
+            int level = 1;
             try {
-                // IMPORTANT: use the PlayerRef + Store overload so we hit live data
                 RPGLevelingAPI.PlayerLevelInfo info = api.getPlayerLevelInfo(playerRef, store);
-                if (info != null) {
-                    int apiLevel = info.getLevel();
-                    if (apiLevel > 0) {
-                        level = apiLevel;
-                    }
+                if (info != null && info.getLevel() > 0) {
+                    level = info.getLevel();
                 }
             } catch (Throwable t) {
                 LOGGER.at(Level.WARNING).log(
-                        "[MysticNameTags] Failed to fetch RPG level for " +
-                                baseName + " (" + uuid + "), defaulting to 1" + t
+                        "[MysticNameTags] Failed to fetch RPG level for " + baseName + " (" + uuid + "), defaulting to 1: " + t
                 );
             }
 
-            String finalText = plainNameplate + " [Lvl. " + level + "]";
-            finalText = ColorFormatter.stripFormatting(finalText);
-            NameplateManager.get().apply(uuid, store, entityRef, finalText);
+            // Build "rank + name + tag" (colored string), then append level (colored style),
+            // and also produce a plain fallback for the vanilla Nameplate component.
+            String resolvedColored = tagManager.getColoredFullNameplate(playerRef);
+
+            // You can style this however you want; glyph renderer understands <#RRGGBB> and </>.
+            String coloredWithLevel = resolvedColored + " <#AAAAAA>[Lvl. " + level + "]</>";
+
+            // Vanilla nameplate must be plain text
+            String plainFallback = ColorFormatter.stripFormatting(coloredWithLevel).trim();
+
+            if (Settings.get().isExperimentalGlyphNameplatesEnabled()) {
+                // Keep vanilla simple/consistent (optional)
+                NameplateManager.get().apply(uuid, store, entityRef, plainFallback);
+
+                // Render colored glyph line above player
+                GlyphNameplateManager.get().apply(uuid, world, store, entityRef, coloredWithLevel);
+            } else {
+                // Normal: vanilla nameplate only
+                NameplateManager.get().apply(uuid, store, entityRef, plainFallback);
+            }
         }
     }
 }
