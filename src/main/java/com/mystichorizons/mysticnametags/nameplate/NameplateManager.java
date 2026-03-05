@@ -10,15 +10,14 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class NameplateManager {
+public final class NameplateManager {
 
     private final Map<UUID, String> original = new ConcurrentHashMap<>();
 
     private static final NameplateManager INSTANCE = new NameplateManager();
+    public static NameplateManager get() { return INSTANCE; }
 
-    public static NameplateManager get() {
-        return INSTANCE;
-    }
+    private NameplateManager() {}
 
     /**
      * Apply a custom nameplate and remember the original text.
@@ -29,18 +28,16 @@ public class NameplateManager {
                       @Nonnull Ref<EntityStore> entityRef,
                       @Nonnull String newText) {
 
-        store.assertThread(); // defensive – will throw clearly if misused
-
+        store.assertThread();
 
         Nameplate nameplate = store.getComponent(entityRef, Nameplate.getComponentType());
         if (nameplate == null) {
-            nameplate = new Nameplate(newText);
-            store.addComponent(entityRef, Nameplate.getComponentType(), nameplate);
-            // No original in this case – treat empty as default.
-        } else {
-            original.putIfAbsent(uuid, nameplate.getText());
-            nameplate.setText(newText);
+            store.addComponent(entityRef, Nameplate.getComponentType(), new Nameplate(newText));
+            return;
         }
+
+        original.putIfAbsent(uuid, nameplate.getText());
+        nameplate.setText(newText);
     }
 
     /**
@@ -52,7 +49,7 @@ public class NameplateManager {
                         @Nonnull Ref<EntityStore> entityRef,
                         @Nonnull String fallbackName) {
 
-        store.assertThread(); // defensive
+        store.assertThread();
 
         Nameplate nameplate = store.getComponent(entityRef, Nameplate.getComponentType());
         String originalText = original.remove(uuid);
@@ -60,8 +57,7 @@ public class NameplateManager {
         String text = (originalText != null) ? originalText : fallbackName;
 
         if (nameplate == null) {
-            nameplate = new Nameplate(text);
-            store.addComponent(entityRef, Nameplate.getComponentType(), nameplate);
+            store.addComponent(entityRef, Nameplate.getComponentType(), new Nameplate(text));
         } else {
             nameplate.setText(text);
         }
