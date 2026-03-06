@@ -5,23 +5,25 @@ import java.awt.Color;
 
 public final class GlyphAssets {
 
-    // Change if your asset namespace differs
-    public static final String NAMESPACE = "MysticNameTags";
+
+    public static final String NAMESPACE = "mysticnametags";
 
     private GlyphAssets() {}
 
     public static String modelId(String safeCharId) {
-        // e.g. MysticNameTags:Glyph_lo_a
+        // e.g. mysticnametags:Glyph_lo_a
         return NAMESPACE + ":Glyph_" + safeCharId;
     }
 
     public static String tintEffectId(int rgbQuantized) {
-        // e.g. MysticNameTags:HtTint_FF00AA
+        // e.g. mysticnametags:HtTint_FF00AA
         return NAMESPACE + ":HtTint_" + String.format("%06X", (rgbQuantized & 0xFFFFFF));
     }
 
     public static int rgb(Color c) {
-        return ((c.getRed() & 0xFF) << 16) | ((c.getGreen() & 0xFF) << 8) | (c.getBlue() & 0xFF);
+        return ((c.getRed() & 0xFF) << 16)
+                | ((c.getGreen() & 0xFF) << 8)
+                | (c.getBlue() & 0xFF);
     }
 
     @Nullable
