@@ -438,15 +438,12 @@ public class MysticNameTagsPlugin extends JavaPlugin {
     }
 
     private void startGlyphFollowSchedulerIfNeeded() {
-        if (!Settings.get().isExperimentalGlyphNameplatesEnabled()) {
-            LOGGER.at(Level.INFO).log("[MysticNameTags] Glyph nameplates disabled; not starting glyph scheduler.");
+        if (glyphScheduler != null && !glyphScheduler.isShutdown()) {
             return;
         }
 
-        if (glyphScheduler != null && !glyphScheduler.isShutdown()) return;
-
         int ticks = Settings.get().getExperimentalGlyphUpdateTicks();
-        long periodMs = Math.max(1, ticks) * 50L;
+        long periodNanos = Math.max(1L, ticks) * 50_000_000L;
 
         glyphScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "MysticNameTags-GlyphFollow");
@@ -456,20 +453,14 @@ public class MysticNameTagsPlugin extends JavaPlugin {
 
         glyphScheduler.scheduleAtFixedRate(
                 new com.mystichorizons.mysticnametags.nameplate.GlyphNameplateFollowTask(),
-                periodMs,
-                periodMs,
-                TimeUnit.MILLISECONDS
+                periodNanos,
+                periodNanos,
+                TimeUnit.NANOSECONDS
         );
 
-        LOGGER.at(Level.INFO).log("[MysticNameTags] Started glyph follow scheduler (every " + periodMs + "ms).");
-    }
-
-    private void stopGlyphScheduler() {
-        if (glyphScheduler != null) {
-            try { glyphScheduler.shutdownNow(); } catch (Throwable ignored) {}
-            glyphScheduler = null;
-            LOGGER.at(Level.INFO).log("[MysticNameTags] Stopped glyph follow scheduler.");
-        }
+        LOGGER.at(Level.INFO).log(
+                "[MysticNameTags] Started glyph follow scheduler (every " + periodNanos + "ns)."
+        );
     }
 
     private void stopGlyphFollowScheduler() {
