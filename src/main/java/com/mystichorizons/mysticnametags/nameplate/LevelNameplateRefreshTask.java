@@ -84,8 +84,8 @@ public class LevelNameplateRefreshTask implements Runnable {
             String plainFallback = ColorFormatter.stripFormatting(coloredWithLevel).trim();
 
             if (Settings.get().isExperimentalGlyphNameplatesEnabled()) {
-                // Keep vanilla simple/consistent (optional)
-                NameplateManager.get().apply(uuid, store, entityRef, plainFallback);
+                // Hide vanilla to prevent double-render
+                NameplateManager.get().apply(uuid, store, entityRef, " ");
 
                 // Render colored glyph line above player
                 GlyphNameplateManager.get().apply(uuid, world, store, entityRef, coloredWithLevel);
