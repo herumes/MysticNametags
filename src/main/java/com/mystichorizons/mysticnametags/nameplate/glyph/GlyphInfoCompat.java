@@ -7,9 +7,8 @@ import java.util.Map;
 
 public final class GlyphInfoCompat {
 
-    // Similar spacing to PerfectHolograms
-    public static final double CHAR_WIDTH = 0.02;
-    public static final float  BASE_MODEL_SCALE = 0.07f;
+    public static final double CHAR_WIDTH = 0.1;
+    public static final float BASE_MODEL_SCALE = 1.0f;
 
     /**
      * Raw safe ids stored in lowercase to match your asset naming convention.

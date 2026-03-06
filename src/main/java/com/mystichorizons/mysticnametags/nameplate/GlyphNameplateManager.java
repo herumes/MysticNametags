@@ -3,32 +3,31 @@ package com.mystichorizons.mysticnametags.nameplate;
 import com.hypixel.hytale.component.AddReason;
 import com.hypixel.hytale.component.Holder;
 import com.hypixel.hytale.component.Ref;
+import com.hypixel.hytale.component.RemoveReason;
 import com.hypixel.hytale.component.Store;
 import com.hypixel.hytale.logger.HytaleLogger;
 import com.hypixel.hytale.math.vector.Vector3d;
 import com.hypixel.hytale.math.vector.Vector3f;
-import com.hypixel.hytale.server.core.asset.type.entityeffect.config.EntityEffect;
-import com.hypixel.hytale.server.core.asset.type.entityeffect.config.OverlapBehavior;
 import com.hypixel.hytale.server.core.asset.type.model.config.Model;
 import com.hypixel.hytale.server.core.asset.type.model.config.ModelAsset;
 import com.hypixel.hytale.server.core.entity.UUIDComponent;
-import com.hypixel.hytale.server.core.entity.effect.EffectControllerComponent;
+import com.hypixel.hytale.server.core.modules.entity.EntityModule;
 import com.hypixel.hytale.server.core.modules.entity.component.Intangible;
 import com.hypixel.hytale.server.core.modules.entity.component.ModelComponent;
 import com.hypixel.hytale.server.core.modules.entity.component.PersistentModel;
 import com.hypixel.hytale.server.core.modules.entity.component.TransformComponent;
+import com.hypixel.hytale.server.core.modules.entity.component.EntityScaleComponent;
 import com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId;
 import com.hypixel.hytale.server.core.universe.world.World;
 import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.nameplate.glyph.GlyphAssets;
 import com.mystichorizons.mysticnametags.nameplate.glyph.GlyphInfoCompat;
-import com.mystichorizons.mysticnametags.nameplate.glyph.TintPaletteCompat;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.awt.Color;
-import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -117,10 +116,6 @@ public final class GlyphNameplateManager {
         follow(store, playerRef, state);
     }
 
-    // ---------------------------------------------------------------------
-    // Build & follow
-    // ---------------------------------------------------------------------
-
     private void rebuild(@Nonnull World world,
                          @Nonnull Store<EntityStore> store,
                          @Nonnull Ref<EntityStore> playerRef,
@@ -134,17 +129,22 @@ public final class GlyphNameplateManager {
         TransformComponent playerTx = store.getComponent(playerRef, TransformComponent.getComponentType());
         if (playerTx == null) return;
 
+        Vector3d p = playerTx.getTransform().getPosition();
         Vector3f playerRot = playerTx.getTransform().getRotation();
-        float yaw = playerRot.getY();
+        
+        float faceYaw = playerRot.getY() + 180f + 90f;
+        double faceYawRad = Math.toRadians(faceYaw);
 
-        // Parse into per-character colors
+        double cos = Math.cos(faceYawRad);
+        double sin = Math.sin(faceYawRad);
+
+        Vector3d anchor = new Vector3d(p.getX(), p.getY() + ANCHOR_Y_OFFSET, p.getZ());
+
         List<ColoredChar> chars = SimpleColorParser.parse(text);
 
-        // Determine spacing/scale
         double charWidth = GlyphInfoCompat.CHAR_WIDTH * state.scale;
         float modelScale = GlyphInfoCompat.BASE_MODEL_SCALE * (float) state.scale;
 
-        // Center align based on visible count (including spaces)
         int count = 0;
         for (ColoredChar cc : chars) {
             if (cc.ch == '\n' || cc.ch == '\r') continue;
@@ -164,16 +164,26 @@ public final class GlyphNameplateManager {
 
             if (ch == ' ') continue;
 
-            int rgbQuant = TintPaletteCompat.quantizeRgb(cc.color);
-            String tintEffectId = GlyphAssets.tintEffectId(rgbQuant);
+            double newX = offset * cos;
+            double newZ = offset * sin;
+
+            Vector3d charPos = new Vector3d(
+                    anchor.getX() + newX,
+                    anchor.getY(),
+                    anchor.getZ() + newZ
+            );
+
+            // Get gradient info from the color (instead of effect)
+            GradientInfo gradient = findClosestGradient(cc.color);
 
             Ref<EntityStore> glyphRef = spawnGlyph(
                     store,
                     world.getEntityStore(),
                     ch,
-                    tintEffectId,
-                    new Vector3d(0, 0, 0),
-                    new Vector3f(0, yaw, 0),
+                    gradient.set,
+                    gradient.id,
+                    charPos,
+                    new Vector3f(0, faceYaw, 0),
                     modelScale
             );
 
@@ -194,33 +204,33 @@ public final class GlyphNameplateManager {
         Vector3d p = playerTx.getTransform().getPosition();
         Vector3f r = playerTx.getTransform().getRotation();
 
-        double yawRad = Math.toRadians(r.getY());
+        float faceYaw = r.getY() + 180f;
+        double faceYawRad = Math.toRadians(faceYaw);
 
-        // RIGHT vector for horizontal spacing
-        double rightX = Math.sin(yawRad);
-        double rightZ = Math.cos(yawRad);
+        double cos = Math.cos(faceYawRad);
+        double sin = Math.sin(faceYawRad);
 
         Vector3d anchor = new Vector3d(p.getX(), p.getY() + ANCHOR_Y_OFFSET, p.getZ());
-
-        // face the camera-ish (common for flat glyph planes)
-        float faceYaw = r.getY() + 180f;
 
         for (int i = 0; i < state.glyphRefs.size(); i++) {
             Ref<EntityStore> glyphRef = state.glyphRefs.get(i);
             if (glyphRef == null || !glyphRef.isValid()) continue;
 
-            double along = state.glyphOffsets.get(i);
+            double offset = state.glyphOffsets.get(i);
+
+            double newX = offset * cos;
+            double newZ = offset * sin;
 
             Vector3d pos = new Vector3d(
-                    anchor.getX() + rightX * along,
+                    anchor.getX() + newX,
                     anchor.getY(),
-                    anchor.getZ() + rightZ * along
+                    anchor.getZ() + newZ
             );
 
             TransformComponent tx = store.getComponent(glyphRef, TransformComponent.getComponentType());
             if (tx == null) continue;
 
-            TransformComponentCompat.apply(tx, pos, new Vector3f(0f, faceYaw, 0f));
+            TransformComponentCompat.apply(store, tx, pos, new Vector3f(0f, faceYaw, 0f));
         }
     }
 
@@ -258,7 +268,8 @@ public final class GlyphNameplateManager {
     private Ref<EntityStore> spawnGlyph(@Nonnull Store<EntityStore> store,
                                         @Nonnull EntityStore entityStore,
                                         char ch,
-                                        @Nonnull String effectAssetId,
+                                        @Nullable String gradientSet,
+                                        @Nullable String gradientId,
                                         @Nonnull Vector3d pos,
                                         @Nonnull Vector3f rot,
                                         float scale) {
@@ -282,45 +293,63 @@ public final class GlyphNameplateManager {
             }
 
             if (asset == null) {
-                LOGGER.at(Level.WARNING).log("[MysticNameTags] Glyph model not found for '" + ch + "': " + Arrays.toString(candidates));
+                String shortName = candidates[0];
+                if (shortName.contains(":")) shortName = shortName.substring(shortName.lastIndexOf(':') + 1);
+                shortName = shortName.toLowerCase(Locale.ROOT);
+
+                for (Map.Entry<String, ?> entry : ModelAsset.getAssetMap().getAssetMap().entrySet()) {
+                    if (entry.getKey().toLowerCase(Locale.ROOT).endsWith(shortName)) {
+                        asset = (ModelAsset) entry.getValue();
+                        usedModelId = entry.getKey();
+                        break;
+                    }
+                }
+            }
+
+            if (asset == null) {
                 return null;
             }
 
             Model model = Model.createScaledModel(asset, scale);
 
+            // Apply gradient if we have it (using reflection as fallback)
+            if (gradientSet != null && gradientId != null && model != null) {
+                try {
+                    Field fs = Model.class.getDeclaredField("gradientSet");
+                    fs.setAccessible(true);
+                    fs.set(model, gradientSet);
+                    
+                    Field fi = Model.class.getDeclaredField("gradientId");
+                    fi.setAccessible(true);
+                    fi.set(model, gradientId);
+                } catch (Throwable ignored) {
+                    LOGGER.at(Level.FINE).log("[MysticNameTags] Could not set gradient via reflection, model may be white.");
+                }
+            }
+            
+            // Create static reference for persistence
+            com.hypixel.hytale.server.core.asset.type.model.config.Model.ModelReference staticRef = 
+                new com.hypixel.hytale.server.core.asset.type.model.config.Model.ModelReference(usedModelId, scale, null, true);
+
             holder.putComponent(TransformComponent.getComponentType(), new TransformComponent(pos, rot));
             holder.putComponent(ModelComponent.getComponentType(), new ModelComponent(model));
-            holder.putComponent(PersistentModel.getComponentType(), new PersistentModel(model.toReference()));
+            holder.putComponent(PersistentModel.getComponentType(), new PersistentModel(staticRef));
+            holder.putComponent(EntityScaleComponent.getComponentType(), new EntityScaleComponent(scale));
             holder.putComponent(NetworkId.getComponentType(), new NetworkId(entityStore.takeNextNetworkId()));
 
             UUIDComponent uuidComp = UUIDComponent.randomUUID();
             holder.putComponent(UUIDComponent.getComponentType(), uuidComp);
-
             holder.putComponent(Intangible.getComponentType(), Intangible.INSTANCE);
 
-            // Attach effects controller
-            holder.putComponent(EffectControllerComponent.getComponentType(), new EffectControllerComponent());
+            // Ensure required components for visibility
+            holder.ensureComponent(EntityModule.get().getVisibleComponentType());
+            holder.ensureComponent(EntityStore.REGISTRY.getNonSerializedComponentType());
 
             Ref<EntityStore> spawned = store.addEntity(holder, AddReason.SPAWN);
-
-            // Fetch the actual component from the spawned entity (some builds clone components)
-            EffectControllerComponent spawnedEffects =
-                    store.getComponent(spawned, EffectControllerComponent.getComponentType());
-
-            EntityEffect tint = (EntityEffect) EntityEffect.getAssetMap().getAsset(effectAssetId);
-            if (tint != null) {
-                if (spawnedEffects != null) {
-                    spawnedEffects.addEffect(spawned, tint, (float) Integer.MAX_VALUE, OverlapBehavior.OVERWRITE, store);
-                } else {
-                    LOGGER.at(Level.WARNING).log("[MysticNameTags] EffectControllerComponent missing on spawned glyph: " + usedModelId);
-                }
-            } else {
-                LOGGER.at(Level.WARNING).log("[MysticNameTags] Tint effect not found: " + effectAssetId);
-            }
-
             return spawned;
+
         } catch (Throwable t) {
-            LOGGER.at(Level.WARNING).withCause(t).log("[MysticNameTags] spawnGlyph failed");
+            LOGGER.at(Level.WARNING).withCause(t).log("[MysticNameTags] spawnGlyph failed for character " + ch);
             return null;
         }
     }
@@ -344,33 +373,33 @@ public final class GlyphNameplateManager {
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
 
-            // &#RRGGBB
-            if (c == '&' && i + 7 < text.length() && text.charAt(i + 1) == '#') {
+            if ((c == '§' || c == '&') && i + 13 < text.length() && (text.charAt(i + 1) == 'x' || text.charAt(i + 1) == 'X')) {
+                out.append(text, i, i + 14);
+                i += 13;
+                continue;
+            }
+
+            if ((c == '§' || c == '&') && i + 7 < text.length() && text.charAt(i + 1) == '#') {
                 out.append(text, i, i + 8);
                 i += 7;
                 continue;
             }
 
-            // <#RRGGBB>
-            if (c == '<' && i + 8 < text.length() && text.charAt(i + 1) == '#') {
+            if ((c == '§' || c == '&') && i + 1 < text.length()) {
+                char code = Character.toLowerCase(text.charAt(i + 1));
+                if ("0123456789abcdefklmnor".indexOf(code) != -1) {
+                    out.append(text, i, i + 2);
+                    i += 1;
+                    continue;
+                }
+            }
+
+            if (c == '<') {
                 int end = text.indexOf('>', i);
                 if (end > i) {
                     out.append(text, i, end + 1);
                     i = end;
                     continue;
-                }
-            }
-
-            // </> (reset)
-            if (c == '<') {
-                int end = text.indexOf('>', i);
-                if (end > i) {
-                    String tag = text.substring(i, end + 1).toLowerCase(Locale.ROOT);
-                    if (tag.equals("</>")) {
-                        out.append(text, i, end + 1);
-                        i = end;
-                        continue;
-                    }
                 }
             }
 
@@ -380,7 +409,6 @@ public final class GlyphNameplateManager {
                 if (visible >= maxVisible) break;
             }
         }
-
         return out.toString();
     }
 
@@ -398,7 +426,77 @@ public final class GlyphNameplateManager {
         ColoredChar(char ch, Color color) { this.ch = ch; this.color = color; }
     }
 
+    private static final class GradientInfo {
+        final String hex;
+        final String set;
+        final String id;
+        final int r, g, b;
+
+        GradientInfo(String hex, String set, String id) {
+            this.hex = hex; this.set = set; this.id = id;
+            this.r = Integer.parseInt(hex.substring(1, 3), 16);
+            this.g = Integer.parseInt(hex.substring(3, 5), 16);
+            this.b = Integer.parseInt(hex.substring(5, 7), 16);
+        }
+    }
+
+    private static final GradientInfo[] GRADIENTS = {
+        new GradientInfo("#000000", "Flashy_Synthetic", "Black"),
+        new GradientInfo("#0000AA", "Hair", "BlueDark"),
+        new GradientInfo("#00AA00", "Colored_Cotton", "Green"),
+        new GradientInfo("#00AAAA", "Hair", "Turquoise"),
+        new GradientInfo("#AA0000", "Eyes_Gradient", "RedDark"),
+        new GradientInfo("#AA00AA", "Hair", "Lavender"),
+        new GradientInfo("#FFAA00", "Hair", "Copper"),
+        new GradientInfo("#AAAAAA", "Hair", "Black"),
+        new GradientInfo("#555555", "Flashy_Synthetic", "Black"),
+        new GradientInfo("#5555FF", "Fantasy_Cotton_Dark", "Blue"),
+        new GradientInfo("#55FF55", "Colored_Cotton", "Green"),
+        new GradientInfo("#55FFFF", "Hair", "Turquoise"),
+        new GradientInfo("#FF5555", "Eyes_Gradient", "RedDark"),
+        new GradientInfo("#FF55FF", "Hair", "Pink"),
+        new GradientInfo("#FFFF55", "Hair", "Blond"),
+        new GradientInfo("#FFFFFF", "Colored_Cotton", "White"),
+        new GradientInfo("#FFA500", "Hair", "Copper"),
+        new GradientInfo("#FFC0CB", "Hair", "Pink"),
+        new GradientInfo("#A52A2A", "Hair", "BrownDark"),
+        new GradientInfo("#F5F5DC", "Hair", "BlondCaramel")
+    };
+
+    private static GradientInfo findClosestGradient(Color c) {
+        GradientInfo closest = GRADIENTS[15]; // Default White
+        double minDistance = Double.MAX_VALUE;
+        for (GradientInfo g : GRADIENTS) {
+            double dist = Math.sqrt(Math.pow(c.getRed() - g.r, 2) + Math.pow(c.getGreen() - g.g, 2) + Math.pow(c.getBlue() - g.b, 2));
+            if (dist < minDistance) {
+                minDistance = dist;
+                closest = g;
+            }
+        }
+        return closest;
+    }
+
     private static final class SimpleColorParser {
+        private static final Map<Character, Color> LEGACY_COLORS = new HashMap<>();
+        static {
+            LEGACY_COLORS.put('0', new Color(0, 0, 0));
+            LEGACY_COLORS.put('1', new Color(0, 0, 170));
+            LEGACY_COLORS.put('2', new Color(0, 170, 0));
+            LEGACY_COLORS.put('3', new Color(0, 170, 170));
+            LEGACY_COLORS.put('4', new Color(170, 0, 0));
+            LEGACY_COLORS.put('5', new Color(170, 0, 170));
+            LEGACY_COLORS.put('6', new Color(255, 170, 0));
+            LEGACY_COLORS.put('7', new Color(170, 170, 170));
+            LEGACY_COLORS.put('8', new Color(85, 85, 85));
+            LEGACY_COLORS.put('9', new Color(85, 85, 255));
+            LEGACY_COLORS.put('a', new Color(85, 255, 85));
+            LEGACY_COLORS.put('b', new Color(85, 255, 255));
+            LEGACY_COLORS.put('c', new Color(255, 85, 85));
+            LEGACY_COLORS.put('d', new Color(255, 85, 255));
+            LEGACY_COLORS.put('e', new Color(255, 255, 85));
+            LEGACY_COLORS.put('f', new Color(255, 255, 255));
+        }
+
         static List<ColoredChar> parse(String text) {
             List<ColoredChar> out = new ArrayList<>();
             if (text == null || text.isEmpty()) return out;
@@ -408,20 +506,34 @@ public final class GlyphNameplateManager {
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
 
-                if (c == '&' && i + 7 < text.length() && text.charAt(i + 1) == '#') {
+                if ((c == '§' || c == '&') && i + 13 < text.length() && (text.charAt(i + 1) == 'x' || text.charAt(i + 1) == 'X')) {
+                    StringBuilder hex = new StringBuilder();
+                    for(int j=0; j<6; j++) {
+                        hex.append(text.charAt(i + 3 + (j*2)));
+                    }
+                    Color parsed = GlyphAssets.tryParseHex6(hex.toString());
+                    if (parsed != null) current = parsed;
+                    i += 13;
+                    continue;
+                }
+
+                if ((c == '§' || c == '&') && i + 7 < text.length() && text.charAt(i + 1) == '#') {
                     Color parsed = GlyphAssets.tryParseHex6(text.substring(i + 2, i + 8));
                     if (parsed != null) current = parsed;
                     i += 7;
                     continue;
                 }
 
-                if (c == '<' && i + 8 < text.length() && text.charAt(i + 1) == '#') {
-                    int end = text.indexOf('>', i);
-                    if (end > i) {
-                        String hex = text.substring(i + 2, Math.min(i + 8, end));
-                        Color parsed = GlyphAssets.tryParseHex6(hex);
-                        if (parsed != null) current = parsed;
-                        i = end;
+                if ((c == '§' || c == '&') && i + 1 < text.length()) {
+                    char code = Character.toLowerCase(text.charAt(i + 1));
+                    if (LEGACY_COLORS.containsKey(code)) {
+                        current = LEGACY_COLORS.get(code);
+                        i += 1;
+                        continue;
+                    }
+                    if ("lmno kr".indexOf(code) != -1) {
+                        if (code == 'r') current = Color.WHITE;
+                        i += 1;
                         continue;
                     }
                 }
@@ -429,8 +541,13 @@ public final class GlyphNameplateManager {
                 if (c == '<') {
                     int end = text.indexOf('>', i);
                     if (end > i) {
-                        String tag = text.substring(i, end + 1).toLowerCase(Locale.ROOT);
-                        if (tag.equals("</>")) {
+                        String tag = text.substring(i + 1, end).toLowerCase(Locale.ROOT);
+                        if (tag.startsWith("#") && tag.length() == 7) {
+                            Color parsed = GlyphAssets.tryParseHex6(tag.substring(1));
+                            if (parsed != null) current = parsed;
+                            i = end;
+                            continue;
+                        } else if (tag.equals("/") || tag.equals("reset")) {
                             current = Color.WHITE;
                             i = end;
                             continue;
@@ -440,7 +557,6 @@ public final class GlyphNameplateManager {
 
                 out.add(new ColoredChar(c, current));
             }
-
             return out;
         }
     }
@@ -457,33 +573,39 @@ public final class GlyphNameplateManager {
         private static Method mSetTransformPR;   // setTransform(Vector3d, Vector3f)
         private static Method mSetTransformObj;  // setTransform(Transform)
         private static Method mGetTransform;     // getTransform()
+        private static Method mMarkChunkDirty;
 
-        private static Constructor<?> cTransform; // new Transform(Vector3d, Vector3f) (best guess)
+        private static java.lang.reflect.Constructor<?> cTransform;
 
-        static void apply(@Nonnull TransformComponent tx,
+        static void apply(@Nonnull Store<EntityStore> store,
+                          @Nonnull TransformComponent tx,
                           @Nonnull Vector3d pos,
                           @Nonnull Vector3f rot) {
 
             tryInit(tx);
 
+            boolean updated = false;
+
             if (mSetTransformPR != null) {
                 try {
                     mSetTransformPR.invoke(tx, pos, rot);
-                    return;
+                    updated = true;
                 } catch (Throwable ignored) {}
             }
 
-            boolean didPos = false;
-            if (mSetPosition != null) {
-                try { mSetPosition.invoke(tx, pos); didPos = true; } catch (Throwable ignored) {}
+            if (!updated) {
+                boolean didPos = false;
+                if (mSetPosition != null) {
+                    try { mSetPosition.invoke(tx, pos); didPos = true; } catch (Throwable ignored) {}
+                }
+                boolean didRot = false;
+                if (mSetRotation != null) {
+                    try { mSetRotation.invoke(tx, rot); didRot = true; } catch (Throwable ignored) {}
+                }
+                if (didPos || didRot) updated = true;
             }
-            boolean didRot = false;
-            if (mSetRotation != null) {
-                try { mSetRotation.invoke(tx, rot); didRot = true; } catch (Throwable ignored) {}
-            }
-            if (didPos || didRot) return;
 
-            if (mSetTransformObj != null) {
+            if (!updated && mSetTransformObj != null) {
                 Object transformObj = null;
 
                 if (cTransform != null) {
@@ -504,6 +626,12 @@ public final class GlyphNameplateManager {
                     } catch (Throwable ignored) {}
                 }
             }
+
+            if (mMarkChunkDirty != null) {
+                try {
+                    mMarkChunkDirty.invoke(tx, store);
+                } catch (Throwable ignored) {}
+            }
         }
 
         private static void tryInit(@Nonnull TransformComponent tx) {
@@ -517,6 +645,7 @@ public final class GlyphNameplateManager {
                 mSetTransformPR = findMethod(cls, "setTransform", Vector3d.class, Vector3f.class);
                 mSetPosition    = findMethod(cls, "setPosition", Vector3d.class);
                 mSetRotation    = findMethod(cls, "setRotation", Vector3f.class);
+                mMarkChunkDirty = findMethod(cls, "markChunkDirty", Store.class);
 
                 for (Method m : cls.getMethods()) {
                     if (!m.getName().equals("setTransform")) continue;

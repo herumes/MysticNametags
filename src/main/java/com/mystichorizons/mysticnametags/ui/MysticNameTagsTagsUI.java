@@ -677,28 +677,28 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
                 try {
                     result = manager.toggleTag(playerRef, uuid, resolvedId);
 
-                    Player player = store.getComponent(ref, Player.getComponentType());
-                    if (player != null) {
-                        String baseName = playerRef.getUsername();
-                        try {
-                            switch (result) {
-                                case UNLOCKED_FREE,
-                                     UNLOCKED_PAID,
-                                     EQUIPPED_ALREADY_OWNED -> {
-                                    String text = manager.buildPlainNameplate(playerRef, baseName, uuid);
-                                    NameplateManager.get().apply(uuid, store, ref, text);
-                                }
-                                case UNEQUIPPED -> {
-                                    NameplateManager.get().restore(uuid, store, ref, baseName);
-                                    String text = manager.buildPlainNameplate(playerRef, baseName, uuid);
-                                    NameplateManager.get().apply(uuid, store, ref, text);
-                                }
-                                default -> {
-                                    // no-op
-                                }
-                            }
-                        } catch (Throwable ignored) { }
-                    }
+                    // Player player = store.getComponent(ref, Player.getComponentType());
+                    // if (player != null) {
+                    //     String baseName = playerRef.getUsername();
+                    //     try {
+                    //         switch (result) {
+                    //             case UNLOCKED_FREE,
+                    //                  UNLOCKED_PAID,
+                    //                  EQUIPPED_ALREADY_OWNED -> {
+                    //                 String text = manager.buildPlainNameplate(playerRef, baseName, uuid);
+                    //                 NameplateManager.get().apply(uuid, store, ref, text);
+                    //             }
+                    //             case UNEQUIPPED -> {
+                    //                 NameplateManager.get().restore(uuid, store, ref, baseName);
+                    //                 String text = manager.buildPlainNameplate(playerRef, baseName, uuid);
+                    //                 NameplateManager.get().apply(uuid, store, ref, text);
+                    //             }
+                    //             default -> {
+                    //                 // no-op
+                    //             }
+                    //         }
+                    //     } catch (Throwable ignored) { }
+                    // }
 
                     // If we just EQUIPPED a tag, record cooldown timestamp
                     switch (result) {

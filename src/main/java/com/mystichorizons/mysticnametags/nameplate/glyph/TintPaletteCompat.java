@@ -18,8 +18,8 @@ public final class TintPaletteCompat {
     }
 
     private static int quantizeChannel(int v) {
-        // Map 0..255 -> step 0..8 -> back to 0..255
         int step = (int) Math.round((v / 255.0) * 8.0);
-        return (int) Math.round((step / 8.0) * 255.0);
+        int val = step * 32;
+        return val > 255 ? 255 : val;
     }
 }

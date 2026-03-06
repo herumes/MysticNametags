@@ -21,7 +21,6 @@ import com.mystichorizons.mysticnametags.util.ConsoleCommandRunner;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -995,7 +994,7 @@ public class TagManager {
                 if (glyphEnabled) {
 
                     // Hide vanilla to prevent double-render (glyph will show the "real" text).
-                    NameplateManager.get().apply(uuid, store, ref, "");
+                    NameplateManager.get().apply(uuid, store, ref, " ");
 
                     // Glyph overlay uses colored text
                     GlyphNameplateManager.get().apply(uuid, world, store, ref, resolvedColored);
