@@ -8,8 +8,8 @@ import java.util.Map;
 public final class GlyphInfoCompat {
 
     // Similar spacing to PerfectHolograms
-    public static final double CHAR_WIDTH = 0.02;
-    public static final float  BASE_MODEL_SCALE = 0.07f;
+    public static final double CHAR_WIDTH = 0.1;
+    public static final float  BASE_MODEL_SCALE = 1.0f;
 
     /**
      * Raw safe ids stored in lowercase to match your asset naming convention.
@@ -67,10 +67,6 @@ public final class GlyphInfoCompat {
         return CHAR_TO_SAFE_ID_RAW.containsKey(ch);
     }
 
-    /**
-     * Lowercase safe id (matches your asset naming convention).
-     * ex: 'a' -> lo_a, '"' -> dquote
-     */
     @Nullable
     public static String getSafeIdLower(char ch) {
         String raw = CHAR_TO_SAFE_ID_RAW.get(ch);
@@ -78,17 +74,11 @@ public final class GlyphInfoCompat {
         return raw.toLowerCase(Locale.ROOT);
     }
 
-    /**
-     * Default safe id: lowercase.
-     */
     @Nullable
     public static String getSafeId(char ch) {
         return getSafeIdLower(ch);
     }
 
-    /**
-     * Default model asset id: lowercase first.
-     */
     @Nullable
     public static String getModelAssetId(char ch) {
         String safe = getSafeIdLower(ch);
@@ -97,9 +87,9 @@ public final class GlyphInfoCompat {
     }
 
     /**
-     * Returns candidate asset IDs in priority order:
-     *  1) lowercase (your current assets)
-     *  2) engine-case (if server internally remaps keys)
+     * Candidate asset IDs:
+     *  1) lowercase safe id (your pack)
+     *  2) engine-style cased safe id (some builds/packers do this)
      */
     @Nullable
     public static String[] getModelAssetIdCandidates(char ch) {
@@ -111,23 +101,10 @@ public final class GlyphInfoCompat {
         String idLower = GlyphAssets.modelId(lower);
         String idEngine = GlyphAssets.modelId(engine);
 
-        if (idLower.equals(idEngine)) return new String[]{ idLower };
-        return new String[]{ idLower, idEngine };
+        if (idLower.equals(idEngine)) return new String[]{idLower};
+        return new String[]{idLower, idEngine};
     }
 
-    /**
-     * Converts "lowercase safe id" into commonly-enforced engine casing:
-     * - Split by '_' and TitleCase each segment
-     * - If segment is a single letter -> uppercase it (a -> A)
-     * - Digits remain unchanged
-     *
-     * Examples:
-     *  lo_a         -> Lo_A
-     *  up_z         -> Up_Z
-     *  sans_1       -> Sans_1
-     *  dquote       -> Dquote
-     *  backslash    -> Backslash
-     */
     public static String normalizeEngineCase(String lowerRaw) {
         if (lowerRaw == null || lowerRaw.isEmpty()) return lowerRaw;
 
