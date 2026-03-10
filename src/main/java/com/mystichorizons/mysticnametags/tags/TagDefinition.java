@@ -1,81 +1,72 @@
 package com.mystichorizons.mysticnametags.tags;
 
+import com.google.gson.annotations.SerializedName;
+
 import javax.annotation.Nullable;
 import java.util.List;
 
 public class TagDefinition {
 
-    // JSON fields (keep package-private to let GSON populate them)
+    // JSON fields
     String id;
-    String display;      // e.g. "&x&F&F&A&A&0&0[&6Dragon&x&F&F&A&A&0&0]"
-    String description;  // lore for UI
-    double price;        // 0 = free
+    String display;
+    String description;
+    double price;
     boolean purchasable;
-    String permission;   // optional extra perm (e.g. "mysticnametags.tag.dragon")
-    String category;     // optional category (e.g. "Legendary", "Seasonal", "Donator")
+    String permission;
+    String category;
 
-    Integer requiredPlaytimeMinutes;      // null = no requirement
-    List<String> requiredOwnedTags;       // null/empty = none
+    Integer requiredPlaytimeMinutes;
+    List<String> requiredOwnedTags;
 
-    // challenge / stat requirement
-    String  requiredStatKey;              // null = no stat requirement
-    Integer requiredStatValue;            // null/0 = no stat requirement
+    // Legacy stat format
+    String requiredStatKey;
+    Integer requiredStatValue;
 
-    // item requirements
-    List<ItemRequirement> requiredItems;  // null/empty = none
+    // New stat format
+    List<StatRequirement> requiredStats = List.of();
 
-    // Commands run on *first* unlock
-    List<String> onUnlockCommands;        // null/empty = none
-
+    List<ItemRequirement> requiredItems;
+    List<String> onUnlockCommands;
+    @SerializedName(value = "placeholderRequirements", alternate = {"requiredPlaceholders"})
     List<PlaceholderRequirement> placeholderRequirements = List.of();
 
-    public List<PlaceholderRequirement> getPlaceholderRequirements() {
-        return placeholderRequirements != null ? placeholderRequirements : List.of();
-    }
-
-    public void setPlaceholderRequirements(List<PlaceholderRequirement> placeholderRequirements) {
-        this.placeholderRequirements = (placeholderRequirements != null)
-                ? placeholderRequirements
-                : List.of();
-    }
-
     public static class PlaceholderRequirement {
-        String placeholder;  // e.g. "%wi_level%"
-        String operator;     // "==", "!=", ">", ">=", "<", "<=", "contains"
-        String value;        // comparison value, text or number
+        String placeholder;
+        String operator;
+        String value;
 
         public String getPlaceholder() { return placeholder; }
         public String getOperator() { return operator; }
         public String getValue() { return value; }
     }
 
-    // ----------------------------------------------------------------
-    // EXISTING ACCESSORS
-    // ----------------------------------------------------------------
+    public static class StatRequirement {
+        String key;
+        Integer min;
 
-    public String getId() {
-        return id;
+        public String getKey() { return key; }
+        public Integer getMin() { return min; }
+
+        public boolean isValid() {
+            return key != null && !key.isBlank() && min != null && min > 0;
+        }
     }
 
-    public String getDisplay() {
-        return display;
+    public static class ItemRequirement {
+        String itemId;
+        int amount;
+
+        public String getItemId() { return itemId; }
+        public int getAmount() { return amount; }
     }
 
-    public String getDescription() {
-        return description;
-    }
-
-    public double getPrice() {
-        return price;
-    }
-
-    public boolean isPurchasable() {
-        return purchasable;
-    }
-
-    public String getPermission() {
-        return permission;
-    }
+    public String getId() { return id; }
+    public String getDisplay() { return display; }
+    public String getDescription() { return description; }
+    public double getPrice() { return price; }
+    public boolean isPurchasable() { return purchasable; }
+    public String getPermission() { return permission; }
 
     public String getCategory() {
         if (category == null) return "General";
@@ -104,43 +95,6 @@ public class TagDefinition {
         return requiredOwnedTags != null && !requiredOwnedTags.isEmpty();
     }
 
-    public List<String> getOnUnlockCommands() {
-        return onUnlockCommands == null ? List.of() : onUnlockCommands;
-    }
-
-    public boolean hasOnUnlockCommands() {
-        return onUnlockCommands != null && !onUnlockCommands.isEmpty();
-    }
-
-    // ----------------------------------------------------------------
-    // NEW ACCESSORS
-    // ----------------------------------------------------------------
-
-    /**
-     * e.g. "kills.goblin", "dungeons.completed.goblin_caves"
-     */
-    @Nullable
-    public String getRequiredStatKey() {
-        return requiredStatKey;
-    }
-
-    /**
-     * Minimum stat value (inclusive) required for the tag.
-     */
-    @Nullable
-    public Integer getRequiredStatValue() {
-        return requiredStatValue;
-    }
-
-    public boolean hasStatRequirement() {
-        return requiredStatKey != null && !requiredStatKey.isBlank()
-                && requiredStatValue != null && requiredStatValue > 0;
-    }
-
-    /**
-     * In-game items required to unlock/purchase this tag.
-     * These are treated as a cost and consumed on successful unlock.
-     */
     public List<ItemRequirement> getRequiredItems() {
         return requiredItems == null ? List.of() : requiredItems;
     }
@@ -149,20 +103,65 @@ public class TagDefinition {
         return requiredItems != null && !requiredItems.isEmpty();
     }
 
-    // ----------------------------------------------------------------
-    // DTO for item requirements
-    // ----------------------------------------------------------------
+    public List<String> getOnUnlockCommands() {
+        return onUnlockCommands == null ? List.of() : onUnlockCommands;
+    }
 
-    public static class ItemRequirement {
-        String itemId;
-        int amount;
+    public boolean hasOnUnlockCommands() {
+        return onUnlockCommands != null && !onUnlockCommands.isEmpty();
+    }
 
-        public String getItemId() {
-            return itemId;
+    public List<PlaceholderRequirement> getPlaceholderRequirements() {
+        return placeholderRequirements != null ? placeholderRequirements : List.of();
+    }
+
+    public void setPlaceholderRequirements(List<PlaceholderRequirement> placeholderRequirements) {
+        this.placeholderRequirements = (placeholderRequirements != null)
+                ? placeholderRequirements
+                : List.of();
+    }
+
+    public List<StatRequirement> getRequiredStats() {
+        if (requiredStats != null && !requiredStats.isEmpty()) {
+            return requiredStats;
         }
 
-        public int getAmount() {
-            return amount;
+        if (requiredStatKey != null && !requiredStatKey.isBlank()
+                && requiredStatValue != null && requiredStatValue > 0) {
+            StatRequirement legacy = new StatRequirement();
+            legacy.key = requiredStatKey;
+            legacy.min = requiredStatValue;
+            return List.of(legacy);
         }
+
+        return List.of();
+    }
+
+    public void setRequiredStats(List<StatRequirement> requiredStats) {
+        this.requiredStats = (requiredStats != null) ? requiredStats : List.of();
+    }
+
+    public boolean hasStatRequirement() {
+        return !getRequiredStats().isEmpty();
+    }
+
+    @Nullable
+    public String getRequiredStatKey() {
+        return requiredStatKey;
+    }
+
+    @Nullable
+    public Integer getRequiredStatValue() {
+        return requiredStatValue;
+    }
+
+    public boolean usesLegacyStatRequirement() {
+        return requiredStatKey != null && !requiredStatKey.isBlank()
+                && requiredStatValue != null && requiredStatValue > 0;
+    }
+
+    public void clearLegacyStatRequirement() {
+        this.requiredStatKey = null;
+        this.requiredStatValue = null;
     }
 }
