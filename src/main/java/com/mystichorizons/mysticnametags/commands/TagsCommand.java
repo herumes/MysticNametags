@@ -11,6 +11,7 @@ import com.hypixel.hytale.server.core.universe.PlayerRef;
 import com.hypixel.hytale.server.core.universe.world.World;
 import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 import com.mystichorizons.mysticnametags.config.LanguageManager;
+import com.mystichorizons.mysticnametags.tags.TagManager;
 import com.mystichorizons.mysticnametags.ui.MysticNameTagsTagsUI;
 import com.mystichorizons.mysticnametags.util.ColorFormatter;
 
@@ -60,6 +61,7 @@ public class TagsCommand extends AbstractPlayerCommand {
         sender.sendMessage(colored(lang.tr("cmd.tags.opening")));
 
         try {
+            TagManager.get().clearCanUseCache(uuid);
             MysticNameTagsTagsUI page = new MysticNameTagsTagsUI(playerRef, uuid);
             player.getPageManager().openCustomPage(ref, store, page);
         } catch (Exception e) {
