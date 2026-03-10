@@ -13,16 +13,14 @@ import java.util.logging.Level;
 /**
  * Adapts EndlessLeveling stats into the MysticNameTags StatProvider world.
  *
- * All keys are prefixed with "endlessleveling.":
+ * Supported keys:
  *
- *   - "endlessleveling.level"          -> player level
- *   - "endlessleveling.xp"             -> current XP (rounded)
- *   - "endlessleveling.skill.<ATTR>"   -> SkillAttributeType level, e.g.
- *        "endlessleveling.skill.ATTACK"
- *        "endlessleveling.skill.DEFENSE"
+ *   - "endlessleveling.level"             -> player level
+ *   - "endlessleveling.xp"                -> current XP (rounded)
+ *   - "endlessleveling.prestige"          -> prestige level
+ *   - "endlessleveling.skill.<ATTR>"      -> SkillAttributeType level
  *
- * If EndlessLeveling is not loaded, or a key is unknown, this helper
- * returns null so IntegrationManager can fall back to other providers.
+ * Returns null if EndlessLeveling is unavailable or key is unknown.
  */
 public final class EndlessLevelingStatBridge {
 
@@ -32,9 +30,6 @@ public final class EndlessLevelingStatBridge {
     private EndlessLevelingStatBridge() {
     }
 
-    /**
-     * @return stat value, or null if EndlessLeveling is unavailable or key is unknown.
-     */
     @Nullable
     public static Integer getStatValue(@Nonnull UUID uuid, @Nonnull String key) {
         String trimmed = key.trim();
@@ -42,63 +37,66 @@ public final class EndlessLevelingStatBridge {
             return null;
         }
 
-        // Strip prefix and inspect the remainder
         String tail = trimmed.substring(PREFIX.length());
         EndlessLevelingAPI api = EndlessLevelingAPI.get();
-        // The API itself is safe even if plugin is missing; but guard anyway.
         if (api == null) {
             return null;
         }
 
-        // -------- Basic stats --------
+        try {
+            // -------- Basic stats --------
 
-        if (tail.equalsIgnoreCase("level")) {
-            int level = api.getPlayerLevel(uuid);
-            return (level <= 0) ? null : level;
-        }
-
-        if (tail.equalsIgnoreCase("xp")) {
-            double xp = api.getPlayerXp(uuid);
-            if (xp <= 0.0D) {
-                return null;
-            }
-            if (xp > Integer.MAX_VALUE) {
-                return Integer.MAX_VALUE;
-            }
-            return (int) Math.round(xp);
-        }
-
-        // -------- Skill attribute levels --------
-        // Format: endlessleveling.skill.<SkillAttributeType>
-
-        String lowerTail = tail.toLowerCase(Locale.ROOT);
-        if (lowerTail.startsWith("skill.")) {
-            String rawAttr = tail.substring("skill.".length());
-            if (rawAttr.isBlank()) {
-                return null;
-            }
-
-            try {
-                SkillAttributeType type = SkillAttributeType.valueOf(
-                        rawAttr.toUpperCase(Locale.ROOT)
-                );
-                int level = api.getSkillAttributeLevel(uuid, type);
+            if (tail.equalsIgnoreCase("level")) {
+                int level = api.getPlayerLevel(uuid);
                 return (level <= 0) ? null : level;
-            } catch (IllegalArgumentException ex) {
-                // Unknown attribute id
-                LOGGER.at(Level.FINE)
-                        .withCause(ex)
-                        .log("[MysticNameTags] Unknown EndlessLeveling skill attribute: %s", rawAttr);
-                return null;
-            } catch (Throwable t) {
-                LOGGER.at(Level.FINE)
-                        .withCause(t)
-                        .log("[MysticNameTags] Failed to read EndlessLeveling skill stat '%s' for %s", rawAttr, uuid);
-                return null;
             }
-        }
 
-        // Unknown endlessleveling.* key – let caller fall back to other providers
-        return null;
+            if (tail.equalsIgnoreCase("xp")) {
+                double xp = api.getPlayerXp(uuid);
+                if (xp <= 0.0D) {
+                    return null;
+                }
+                if (xp > Integer.MAX_VALUE) {
+                    return Integer.MAX_VALUE;
+                }
+                return (int) Math.round(xp);
+            }
+
+            if (tail.equalsIgnoreCase("prestige")) {
+                int prestige = api.getPlayerPrestigeLevel(uuid);
+                return (prestige < 0) ? null : prestige;
+            }
+
+            // -------- Skill attribute levels --------
+            // Format: endlessleveling.skill.<SkillAttributeType>
+
+            String lowerTail = tail.toLowerCase(Locale.ROOT);
+            if (lowerTail.startsWith("skill.")) {
+                String rawAttr = tail.substring("skill.".length());
+                if (rawAttr.isBlank()) {
+                    return null;
+                }
+
+                try {
+                    SkillAttributeType type = SkillAttributeType.valueOf(
+                            rawAttr.toUpperCase(Locale.ROOT)
+                    );
+                    int level = api.getSkillAttributeLevel(uuid, type);
+                    return (level <= 0) ? null : level;
+                } catch (IllegalArgumentException ex) {
+                    LOGGER.at(Level.FINE)
+                            .withCause(ex)
+                            .log("[MysticNameTags] Unknown EndlessLeveling skill attribute: %s", rawAttr);
+                    return null;
+                }
+            }
+
+            return null;
+        } catch (Throwable t) {
+            LOGGER.at(Level.FINE)
+                    .withCause(t)
+                    .log("[MysticNameTags] Failed to read EndlessLeveling stat '%s' for %s", tail, uuid);
+            return null;
+        }
     }
 }

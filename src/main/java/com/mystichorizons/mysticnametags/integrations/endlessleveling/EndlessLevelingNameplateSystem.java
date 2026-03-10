@@ -24,7 +24,6 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
     private final PlayerDataManager playerDataManager;
     private final TagManager tagManager;
 
-    // Cache last applied FULL label
     private final Map<UUID, String> lastLabels = new ConcurrentHashMap<>();
 
     public EndlessLevelingNameplateSystem(@Nonnull PlayerDataManager playerDataManager,
@@ -42,6 +41,7 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
         if (!s.isEndlessLevelingNameplatesEnabled()) return;
 
         final boolean showRace = s.isEndlessRaceDisplayEnabled();
+        final boolean showPrestige = s.isEndlessPrestigeDisplayEnabled();
 
         store.forEachChunk(PLAYER_QUERY, (chunk, commandBuffer) -> {
             for (int i = 0; i < chunk.size(); i++) {
@@ -64,35 +64,45 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
 
                 int level = Math.max(1, data.getLevel());
 
-                // Mystic base (plain; rank/name/tag, stripped)
+                // Adjust getter name to whatever EndlessLeveling uses
+                int prestige = Math.max(0, data.getPrestigeLevel());
+
                 String plain = tagManager.buildPlainNameplate(playerRef, baseName, uuid);
 
-                // Build single-line label:
-                // RaceId • Plain - Lvl.X
-                // or Plain - Lvl.X
-                String label;
+                StringBuilder label = new StringBuilder();
+
                 if (showRace) {
                     String raceId = data.getRaceId();
-                    if (raceId == null || raceId.isBlank()) raceId = PlayerData.DEFAULT_RACE_ID;
-
-                    label = raceId + " \u2022 " + plain + " - Lvl." + level;
-                } else {
-                    label = plain + " - Lvl." + level;
+                    if (raceId == null || raceId.isBlank()) {
+                        raceId = PlayerData.DEFAULT_RACE_ID;
+                    }
+                    label.append(raceId).append(" \u2022 ");
                 }
 
+                label.append(plain).append(" - ");
+
+                if (showPrestige && prestige > 0) {
+                    label.append(s.getEndlessPrestigePrefix())
+                            .append(prestige)
+                            .append(" ");
+                }
+
+                label.append("Lvl.").append(level);
+
+                String finalLabel = label.toString();
+
                 String prev = lastLabels.get(uuid);
-                if (label.equals(prev)) continue;
+                if (finalLabel.equals(prev)) continue;
 
                 Nameplate nameplate = commandBuffer.ensureAndGetComponent(ref, Nameplate.getComponentType());
                 if (nameplate == null) continue;
 
-                nameplate.setText(label);
-                lastLabels.put(uuid, label);
+                nameplate.setText(finalLabel);
+                lastLabels.put(uuid, finalLabel);
             }
         });
     }
 
-    /** Force a re-apply next tick (used when other systems overwrite the nameplate). */
     public void invalidate(@Nonnull UUID uuid) {
         lastLabels.remove(uuid);
     }
