@@ -45,6 +45,8 @@ public class TagManager {
 
     private static TagManager instance;
 
+    private static final long CAN_USE_CACHE_TTL_MS = 5000L;
+
     private volatile List<TagDefinition> tagList = Collections.emptyList();
     private final Map<String, TagDefinition> tags = new LinkedHashMap<>();
     private final PlayerTagStore playerTagStore;
@@ -57,7 +59,7 @@ public class TagManager {
 
     // Cache of "canUseTag" decisions per player + tag id (lowercase).
     // Avoids repeated permission checks on large tag sets.
-    private final Map<UUID, Map<String, Boolean>> canUseCache = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<String, CanUseCacheEntry>> canUseCache = new ConcurrentHashMap<>();
 
     private volatile List<String> categories = Collections.emptyList();
 
@@ -176,6 +178,7 @@ public class TagManager {
 
             // ----- Auto-upgrade: ensure all tags have a category -----
             boolean upgradedCategories = upgradeCategoriesIfNeeded(list);
+            boolean upgradedStats = upgradeStatRequirementsIfNeeded(list);
 
             tags.clear();
 
@@ -234,7 +237,7 @@ public class TagManager {
 
             // If we upgraded any entries (added default categories),
             // write the new structure back to disk so the file is permanently updated.
-            if (upgradedCategories && list != null) {
+            if ((upgradedCategories || upgradedStats) && list != null) {
                 saveConfig(list);
             }
 
@@ -276,6 +279,97 @@ public class TagManager {
         }
 
         return changed;
+    }
+
+    /**
+     * Auto-upgrade legacy stat requirement fields:
+     *
+     * Old:
+     *   "requiredStatKey": "killed.goblin_miner",
+     *   "requiredStatValue": 100
+     *
+     * New:
+     *   "requiredStats": [
+     *     { "key": "killed.goblin_miner", "min": 100 }
+     *   ]
+     *
+     * Rules:
+     * - If requiredStats already exists and is non-empty, leave it alone.
+     * - If legacy fields are present and valid, convert them to requiredStats.
+     * - Clear legacy fields afterward so the rewritten tags.json uses only the new format.
+     *
+     * @param list parsed tags list
+     * @return true if any tag was upgraded and file should be re-saved
+     */
+    private boolean upgradeStatRequirementsIfNeeded(@Nullable List<TagDefinition> list) {
+        if (list == null || list.isEmpty()) {
+            return false;
+        }
+
+        boolean changed = false;
+
+        for (TagDefinition def : list) {
+            if (def == null) {
+                continue;
+            }
+
+            // Already using new format -> leave as-is
+            List<TagDefinition.StatRequirement> current = def.getRequiredStats();
+            boolean hasNewFormat =
+                    current != null &&
+                            !current.isEmpty() &&
+                            (def.getRequiredStatKey() == null || def.getRequiredStatKey().isBlank());
+
+            if (hasNewFormat) {
+                continue;
+            }
+
+            String legacyKey = def.getRequiredStatKey();
+            Integer legacyMin = def.getRequiredStatValue();
+
+            if (legacyKey == null || legacyKey.isBlank() || legacyMin == null || legacyMin <= 0) {
+                continue;
+            }
+
+            TagDefinition.StatRequirement migrated = new TagDefinition.StatRequirement();
+
+            // Because TagManager is in the same package as TagDefinition,
+            // package-private field assignment works.
+            migrated.key = legacyKey.trim();
+            migrated.min = legacyMin;
+
+            def.setRequiredStats(List.of(migrated));
+            def.clearLegacyStatRequirement();
+
+            changed = true;
+
+            LOGGER.at(Level.INFO).log(
+                    "[MysticNameTags] Auto-upgraded tag '" + def.getId() +
+                            "' from legacy requiredStatKey/requiredStatValue to requiredStats."
+            );
+        }
+
+        if (changed) {
+            LOGGER.at(Level.INFO)
+                    .log("[MysticNameTags] Auto-updated tags.json: legacy stat requirements migrated to requiredStats.");
+        }
+
+        return changed;
+    }
+
+
+    private static final class CanUseCacheEntry {
+        private final boolean value;
+        private final long timestamp;
+
+        private CanUseCacheEntry(boolean value, long timestamp) {
+            this.value = value;
+            this.timestamp = timestamp;
+        }
+
+        private boolean isExpired(long now) {
+            return now - timestamp >= CAN_USE_CACHE_TTL_MS;
+        }
     }
 
     /**
@@ -435,23 +529,22 @@ public class TagManager {
 
         String keyId = rawId.toLowerCase(Locale.ROOT);
 
-        // If we have a UUID, try to use cache
         if (uuid != null) {
-            Map<String, Boolean> perPlayer =
+            long now = System.currentTimeMillis();
+
+            Map<String, CanUseCacheEntry> perPlayer =
                     canUseCache.computeIfAbsent(uuid, u -> new ConcurrentHashMap<>());
 
-            Boolean cached = perPlayer.get(keyId);
-            if (cached != null) {
-                return cached;
+            CanUseCacheEntry cached = perPlayer.get(keyId);
+            if (cached != null && !cached.isExpired(now)) {
+                return cached.value;
             }
 
             boolean result = internalCanUseTagUnchecked(playerRef, uuid, def, keyId);
-
-            perPlayer.put(keyId, result);
+            perPlayer.put(keyId, new CanUseCacheEntry(result, now));
             return result;
         }
 
-        // No UUID → do a one-off check (can't cache safely).
         return internalCanUseTagUnchecked(playerRef, uuid, def, keyId);
     }
 
@@ -464,39 +557,10 @@ public class TagManager {
                                                @Nonnull String normalizedId) {
 
         boolean fullGate = Settings.get().isFullPermissionGateEnabled();
+        boolean permissionGate = Settings.get().isPermissionGateEnabled();
         String perm = def.getPermission();
 
-        // 1) Full permission gate: if enabled and a permission is defined,
-        //    the permission MUST be present to even consider this tag.
-        if (fullGate && perm != null && !perm.isEmpty()) {
-            try {
-                if (!integrations.hasPermission(playerRef, perm)) {
-                    return false;
-                }
-            } catch (Throwable ignored) {
-                // If we can't check perms, treat as not granted
-                return false;
-            }
-        }
-
-        // 2) If we have no UUID, we can't check stored ownership or requirements.
-        //    Fallback to a pure permission check (if a perm is configured).
-        if (uuid == null) {
-            if (perm != null && !perm.isEmpty()) {
-                try {
-                    return integrations.hasPermission(playerRef, perm);
-                } catch (Throwable ignored) {
-                    return false;
-                }
-            }
-            return false;
-        }
-
-        PlayerTagData data = getOrLoad(uuid);
-
-        boolean owns = data.owns(normalizedId);
         boolean hasPerm = false;
-
         if (perm != null && !perm.isEmpty()) {
             try {
                 hasPerm = integrations.hasPermission(playerRef, perm);
@@ -505,13 +569,56 @@ public class TagManager {
             }
         }
 
-        // 3) Base access: must either own the tag OR have the permission
-        if (!owns && !hasPerm) {
+        // 1) Full permission gate:
+        // If enabled and the tag defines a permission node, player must have it.
+        if (fullGate && perm != null && !perm.isEmpty() && !hasPerm) {
             return false;
         }
 
-        // 4) Requirements: if any non-permission requirements exist,
-        //    they must be satisfied for "canUse" to be true.
+        // 2) No UUID = preview-only / non-persistent context.
+        // In this case, only permission-based access can be evaluated.
+        if (uuid == null) {
+            if (perm != null && !perm.isEmpty()) {
+                if (permissionGate || fullGate) {
+                    return hasPerm;
+                }
+                return hasPerm;
+            }
+            return meetsRequirementsForPreview(playerRef, def);
+        }
+
+        PlayerTagData data = getOrLoad(uuid);
+        boolean owns = data.owns(normalizedId);
+
+        // 3) Permission Gate:
+        // If enabled and tag has a permission node, permission is required
+        // to unlock/equip/use the tag even if it is visible in the UI.
+        if (permissionGate && perm != null && !perm.isEmpty() && !hasPerm) {
+            return false;
+        }
+
+        // 4) Base access when no permission gate is active:
+        // player can use the tag if they own it OR have the permission
+        // OR if no permission is defined and ownership is enough.
+        if (!permissionGate) {
+            if (perm != null && !perm.isEmpty()) {
+                if (!owns && !hasPerm) {
+                    return false;
+                }
+            } else if (!owns) {
+                return false;
+            }
+        } else {
+            // Permission gate active:
+            // ownership alone is not enough when a permission node exists.
+            if (perm == null || perm.isEmpty()) {
+                if (!owns) {
+                    return false;
+                }
+            }
+        }
+
+        // 5) Other requirements must still be met.
         if (!meetsRequirements(uuid, playerRef, def)) {
             return false;
         }
@@ -556,25 +663,25 @@ public class TagManager {
             }
         }
 
-        // 3) Required stat (challenge-style unlocks)
-        if (def.hasStatRequirement()) {
-            String statKey = def.getRequiredStatKey();
-            Integer statValue = def.getRequiredStatValue();
+        // 3) Required stats (supports multiple + wildcard)
+        List<TagDefinition.StatRequirement> statReqs = def.getRequiredStats();
+        if (!statReqs.isEmpty()) {
+            for (TagDefinition.StatRequirement req : statReqs) {
+                if (req == null || !req.isValid()) {
+                    return false; // malformed config -> fail safe
+                }
 
-            if (statKey == null || statKey.isBlank() || statValue == null || statValue <= 0) {
-                // Malformed config: treat as not met to avoid free bypasses
-                return false;
-            }
+                Integer current;
+                try {
+                    current = integrations.getStatValue(uuid, req.getKey());
+                } catch (Throwable t) {
+                    current = null;
+                }
 
-            Integer current;
-            try {
-                current = integrations.getStatValue(uuid, statKey);
-            } catch (Throwable t) {
-                current = null;
-            }
-
-            if (current == null || current < statValue) {
-                return false;
+                Integer min = req.getMin();
+                if (current == null || min == null || current < min) {
+                    return false;
+                }
             }
         }
 
@@ -593,7 +700,7 @@ public class TagManager {
                     return false;
                 }
 
-                String actual = integrations.resolvePlaceholder(playerRef, placeholder);
+                String actual = integrations.resolvePlaceholderRequirement(playerRef, placeholder, op, expected);
                 if (!evaluatePlaceholderCondition(actual, op, expected)) {
                     return false;
                 }
@@ -601,6 +708,32 @@ public class TagManager {
         }
 
         // Item requirements intentionally NOT checked here.
+        return true;
+    }
+
+    private boolean meetsRequirementsForPreview(@Nonnull PlayerRef playerRef,
+                                                @Nonnull TagDefinition def) {
+
+        List<TagDefinition.PlaceholderRequirement> phReqs = def.getPlaceholderRequirements();
+        if (phReqs != null && !phReqs.isEmpty()) {
+            for (TagDefinition.PlaceholderRequirement req : phReqs) {
+                if (req == null) continue;
+
+                String placeholder = req.getPlaceholder();
+                String op          = req.getOperator();
+                String expected    = req.getValue();
+
+                if (placeholder == null || op == null || expected == null) {
+                    return false;
+                }
+
+                String actual = integrations.resolvePlaceholderRequirement(playerRef, placeholder, op, expected);
+                if (!evaluatePlaceholderCondition(actual, op, expected)) {
+                    return false;
+                }
+            }
+        }
+
         return true;
     }
 
@@ -639,39 +772,60 @@ public class TagManager {
                                                  @Nonnull String operator,
                                                  @Nonnull String expected) {
         if (actual == null) {
-            // For any positive requirement, missing placeholder → fail
             return false;
         }
 
         String op = operator.trim();
         String exp = expected.trim();
+        String a = actual.trim();
 
-        // Try numeric comparison first if both sides look like numbers
-        Double actualNum = tryParseDouble(actual);
-        Double expNum    = tryParseDouble(exp);
+        // Boolean-style operators:
+        // "true"  => resolved placeholder must be true
+        // "false" => resolved placeholder must be false
+        if (op.equalsIgnoreCase("true")) {
+            return "true".equalsIgnoreCase(a);
+        }
+        if (op.equalsIgnoreCase("false")) {
+            return "false".equalsIgnoreCase(a);
+        }
+
+        // Boolean equality
+        boolean actualIsBool = "true".equalsIgnoreCase(a) || "false".equalsIgnoreCase(a);
+        boolean expectedIsBool = "true".equalsIgnoreCase(exp) || "false".equalsIgnoreCase(exp);
+
+        if (actualIsBool && expectedIsBool) {
+            boolean actualBool = Boolean.parseBoolean(a);
+            boolean expectedBool = Boolean.parseBoolean(exp);
+
+            switch (op) {
+                case "==": return actualBool == expectedBool;
+                case "!=": return actualBool != expectedBool;
+                default: break;
+            }
+        }
+
+        // Numeric comparison
+        Double actualNum = tryParseDouble(a);
+        Double expNum = tryParseDouble(exp);
 
         if (actualNum != null && expNum != null) {
             switch (op) {
                 case "==": return Double.compare(actualNum, expNum) == 0;
                 case "!=": return Double.compare(actualNum, expNum) != 0;
-                case ">":  return actualNum >  expNum;
+                case ">":  return actualNum > expNum;
                 case ">=": return actualNum >= expNum;
-                case "<":  return actualNum <  expNum;
+                case "<":  return actualNum < expNum;
                 case "<=": return actualNum <= expNum;
+                default: break;
             }
         }
 
-        // Fallback to case-insensitive string comparison
-        String a = actual.trim();
-        String b = exp;
-
+        // String comparison
         switch (op) {
-            case "==": return a.equalsIgnoreCase(b);
-            case "!=": return !a.equalsIgnoreCase(b);
-            case "contains": return a.toLowerCase(Locale.ROOT).contains(b.toLowerCase(Locale.ROOT));
-            default:
-                // Unknown op -> fail safe
-                return false;
+            case "==": return a.equalsIgnoreCase(exp);
+            case "!=": return !a.equalsIgnoreCase(exp);
+            case "contains": return a.toLowerCase(Locale.ROOT).contains(exp.toLowerCase(Locale.ROOT));
+            default: return false;
         }
     }
 
@@ -743,12 +897,13 @@ public class TagManager {
         String keyId = rawId.toLowerCase(Locale.ROOT);
 
         boolean fullGate = Settings.get().isFullPermissionGateEnabled();
+        boolean permissionGate = Settings.get().isPermissionGateEnabled();
         String perm = def.getPermission();
 
-        // If full permission gate is enabled and this tag has a permission
-        // node, require it up-front before ANY other logic (owning,
-        // purchasing, etc.).
-        if (fullGate && perm != null && !perm.isEmpty()) {
+        // Full Permission Gate OR Permission Gate:
+        // if the tag defines a permission node, require it up-front before
+        // unlock/equip when either gate is enabled.
+        if ((fullGate || permissionGate) && perm != null && !perm.isEmpty()) {
             try {
                 if (!integrations.hasPermission(playerRef, perm)) {
                     return TagPurchaseResult.NO_PERMISSION;
@@ -792,7 +947,9 @@ public class TagManager {
             runOnFirstUnlockCommands(def, playerRef);
 
             // grant permission if defined (for non-full-gate setups)
-            maybeGrantPermission(uuid, perm);
+            if (!Settings.get().isFullPermissionGateEnabled() && !Settings.get().isPermissionGateEnabled()) {
+                maybeGrantPermission(uuid, perm);
+            }
 
             clearCanUseCache(uuid);
 
@@ -829,7 +986,9 @@ public class TagManager {
         runOnFirstUnlockCommands(def, playerRef);
 
         // grant permission if defined (for non-full-gate setups)
-        maybeGrantPermission(uuid, perm);
+        if (!Settings.get().isFullPermissionGateEnabled() && !Settings.get().isPermissionGateEnabled()) {
+            maybeGrantPermission(uuid, perm);
+        }
 
         clearCanUseCache(uuid);
 
