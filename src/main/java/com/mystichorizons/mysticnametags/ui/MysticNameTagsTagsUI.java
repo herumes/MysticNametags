@@ -208,6 +208,8 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
 
         TagManager tagManager = TagManager.get();
         IntegrationManager integrations = tagManager.getIntegrations();
+        // Clear Cache After Loading Integrations
+        canUseCache.clear();
         boolean fullGate        = Settings.get().isFullPermissionGateEnabled();
         boolean debugShowHidden = tagManager.isShowHiddenTagsForDebug();
 
@@ -314,14 +316,7 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
             if (descHex != null) cmd.set(descSelector + ".Style.TextColor", "#" + descHex);
 
             // canUse (cached)
-            boolean canUse;
-            Boolean cached = canUseCache.get(def.getId());
-            if (cached != null) {
-                canUse = cached;
-            } else {
-                canUse = tagManager.canUseTag(playerRef, uuid, def);
-                canUseCache.put(def.getId(), canUse);
-            }
+            boolean canUse = tagManager.canUseTag(playerRef, uuid, def);
 
             boolean isEquipped = equippedId != null && equippedId.equalsIgnoreCase(def.getId());
             boolean owns       = uuid != null && tagManager.ownsTag(uuid, def.getId());
@@ -742,12 +737,15 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
         List<String> required = def.getRequiredOwnedTags();
         boolean hasOwnedTags = required != null && !required.isEmpty();
 
-        boolean hasStat = def.getRequiredStatKey() != null && !def.getRequiredStatKey().isBlank()
-                && def.getRequiredStatValue() != null && def.getRequiredStatValue() > 0;
+        List<TagDefinition.StatRequirement> statReqs = def.getRequiredStats();
+        boolean hasStats = statReqs != null && !statReqs.isEmpty();
 
         boolean hasItems = def.getRequiredItems() != null && !def.getRequiredItems().isEmpty();
 
-        return hasPerm || hasPlaytime || hasOwnedTags || hasStat || hasItems;
+        List<TagDefinition.PlaceholderRequirement> placeholderReqs = def.getPlaceholderRequirements();
+        boolean hasPlaceholders = placeholderReqs != null && !placeholderReqs.isEmpty();
+
+        return hasPerm || hasPlaytime || hasOwnedTags || hasStats || hasItems || hasPlaceholders;
     }
 
     private boolean isLocked(TagDefinition def, boolean canUse, boolean owns) {
@@ -772,9 +770,20 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
 
         // ----- Permission -----
         String perm = def.getPermission();
+        boolean permissionGate = Settings.get().isPermissionGateEnabled();
+        boolean fullGate = Settings.get().isFullPermissionGateEnabled();
+
         if (perm != null && !perm.isEmpty()) {
             sb.append(lang.tr("ui.tags.req_permission_title"))
-                    .append("\n  ").append(perm).append("\n\n");
+                    .append("\n  ").append(perm);
+
+            if (fullGate) {
+                sb.append("\n  ").append(lang.tr("ui.tags.req_permission_gate_full"));
+            } else if (permissionGate) {
+                sb.append("\n  ").append(lang.tr("ui.tags.req_permission_gate_soft"));
+            }
+
+            sb.append("\n\n");
         }
 
         // ----- Playtime -----
@@ -831,20 +840,25 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
             sb.append("\n");
         }
 
-        // ----- Stat requirement -----
-        String statKey = def.getRequiredStatKey();
-        Integer statValue = def.getRequiredStatValue();
-        if (statKey != null && !statKey.isBlank() && statValue != null && statValue > 0) {
+        // ----- Stat requirements -----
+        List<TagDefinition.StatRequirement> statReqs = def.getRequiredStats();
+        if (statReqs != null && !statReqs.isEmpty()) {
+            sb.append(lang.tr("ui.tags.req_stat_title")).append("\n");
 
-            String keyPretty = resolveStatDisplayName(statKey);
+            for (TagDefinition.StatRequirement req : statReqs) {
+                if (req == null || !req.isValid()) continue;
 
-            sb.append(lang.tr("ui.tags.req_stat_title"))
-                    .append("\n  ")
-                    .append(lang.tr("ui.tags.req_stat_value", Map.of(
-                            "key", keyPretty,
-                            "value", String.valueOf(statValue)
-                    )))
-                    .append("\n");
+                String keyPretty = resolveStatDisplayName(req.getKey());
+
+                sb.append("  • ")
+                        .append(lang.tr("ui.tags.req_stat_value", Map.of(
+                                "key", keyPretty,
+                                "value", String.valueOf(req.getMin())
+                        )))
+                        .append("\n");
+            }
+
+            sb.append("\n");
         }
 
         // ----- Item requirements -----
@@ -981,10 +995,6 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
 
     @Nonnull
     private static String resolveKillEntityDisplayNameFromStatKey(@Nonnull String statKey) {
-        // Expecting keys like:
-        //  - killed.Player
-        //  - killed.hytale:goblin
-        //  - killed.goblin
         String key = statKey.trim();
         if (key.isEmpty()) return statKey;
 
@@ -998,13 +1008,26 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
             return "Player";
         }
 
-        return prettifyId(entityPart);
+        boolean wildcard = entityPart.contains("*");
+        String pretty = prettifyId(entityPart.replace("*", "").trim());
+
+        if (!wildcard) {
+            return pretty;
+        }
+
+        if (pretty.isBlank()) {
+            return "Matching Entities";
+        }
+
+        return pretty + " (any)";
     }
 
     @Nonnull
     private String resolveStatDisplayName(@Nonnull String statKey) {
         String key = statKey.trim();
         if (key.isEmpty()) return statKey;
+
+        boolean wildcard = key.contains("*");
 
         LanguageManager lang = LanguageManager.get();
 
@@ -1058,7 +1081,20 @@ public class MysticNameTagsTagsUI extends InteractiveCustomUIPage<MysticNameTags
 
         // ---------------- killed.* (per-entity kills) ----------------
         if (key.startsWith("killed.")) {
-            String entityName = resolveKillEntityDisplayNameFromStatKey(key); // "Goblin Miner"
+            String entityName = resolveKillEntityDisplayNameFromStatKey(key);
+
+            if (wildcard) {
+                entityName = entityName.replace("*", "").trim();
+                if (entityName.endsWith("_")) {
+                    entityName = entityName.substring(0, entityName.length() - 1).trim();
+                }
+                if (entityName.isEmpty()) {
+                    entityName = "Matching Entities";
+                } else {
+                    entityName = entityName + " (any)";
+                }
+            }
+
             String translated = lang.tr("ui.stats.prefix.kills",
                     Map.of("name", entityName));
             if (!translated.equals("ui.stats.prefix.kills")) {
