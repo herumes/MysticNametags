@@ -83,16 +83,8 @@ public class LevelNameplateRefreshTask implements Runnable {
             // Vanilla nameplate must be plain text
             String plainFallback = ColorFormatter.stripFormatting(coloredWithLevel).trim();
 
-            if (Settings.get().isExperimentalGlyphNameplatesEnabled()) {
-                // Hide vanilla to prevent double-render
-                NameplateManager.get().apply(uuid, store, entityRef, " ");
-
-                // Render colored glyph line above player
-                GlyphNameplateManager.get().apply(uuid, world, store, entityRef, coloredWithLevel);
-            } else {
-                // Normal: vanilla nameplate only
-                NameplateManager.get().apply(uuid, store, entityRef, plainFallback);
-            }
+            // Normal: vanilla nameplate only
+            NameplateManager.get().apply(uuid, store, entityRef, plainFallback);
         }
     }
 }

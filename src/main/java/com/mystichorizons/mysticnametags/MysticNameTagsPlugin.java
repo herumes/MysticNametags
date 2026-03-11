@@ -14,7 +14,13 @@ import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.integrations.IntegrationManager;
 import com.mystichorizons.mysticnametags.listeners.PlayerListener;
 import com.mystichorizons.mysticnametags.nameplate.LevelNameplateRefreshTask;
+import com.mystichorizons.mysticnametags.nameplate.NameplateCoordinator;
 import com.mystichorizons.mysticnametags.nameplate.NameplateManager;
+import com.mystichorizons.mysticnametags.nameplate.QueuedNameplateRefreshTask;
+import com.mystichorizons.mysticnametags.nameplate.render.GlyphNameplateRenderer;
+import com.mystichorizons.mysticnametags.nameplate.render.ImageNameplateRenderer;
+import com.mystichorizons.mysticnametags.nameplate.render.NameplateRendererRegistry;
+import com.mystichorizons.mysticnametags.nameplate.render.VanillaTextNameplateRenderer;
 import com.mystichorizons.mysticnametags.placeholders.HelpchPlaceholderHook;
 import com.mystichorizons.mysticnametags.placeholders.WiFlowPlaceholderHook;
 import com.mystichorizons.mysticnametags.playtime.PlaytimeService;
@@ -28,7 +34,6 @@ import com.mystichorizons.mysticnametags.util.MysticLog;
 import com.mystichorizons.mysticnametags.util.UpdateChecker;
 
 import javax.annotation.Nonnull;
-import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -43,13 +48,17 @@ public class MysticNameTagsPlugin extends JavaPlugin {
     private static MysticNameTagsPlugin instance;
 
     private ScheduledExecutorService levelScheduler;
-    private ScheduledExecutorService glyphScheduler;
+    private ScheduledExecutorService renderScheduler;
+    private ScheduledExecutorService queuedRefreshScheduler;
 
     private IntegrationManager integrations;
     private UpdateChecker updateChecker;
     private PluginManifest manifest;
 
     private PlaytimeService playtimeService;
+
+    private NameplateRendererRegistry nameplateRendererRegistry;
+    private NameplateCoordinator nameplateCoordinator;
 
     public MysticNameTagsPlugin(@Nonnull JavaPluginInit init) {
         super(init);
@@ -76,6 +85,14 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         return updateChecker;
     }
 
+    public NameplateRendererRegistry getNameplateRendererRegistry() {
+        return nameplateRendererRegistry;
+    }
+
+    public NameplateCoordinator getNameplateCoordinator() {
+        return nameplateCoordinator;
+    }
+
     /** Shared "resolved version" helper for UI/commands. */
     public String getResolvedVersion() {
         if (manifest != null && manifest.getVersion() != null) {
@@ -96,16 +113,15 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         }
 
         this.updateChecker = new UpdateChecker(version);
-        // Synchronous is fine here; if you prefer async, wrap in your scheduler.
         this.updateChecker.checkForUpdates();
 
         // ------------------------------------------------------
-        // Playtime service (60s interval; adjust if you add config)
+        // Playtime service
         // ------------------------------------------------------
         this.playtimeService = new PlaytimeService(60L);
 
         // ------------------------------------------------------
-        // Integrations (backed by playtimeService)
+        // Integrations
         // ------------------------------------------------------
         this.integrations = new IntegrationManager(this.playtimeService);
 
@@ -116,17 +132,23 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         LanguageManager.init();
 
         // ------------------------------------------------------
+        // Nameplate renderer system
+        // ------------------------------------------------------
+        this.nameplateRendererRegistry = new NameplateRendererRegistry();
+        this.nameplateRendererRegistry.register(new VanillaTextNameplateRenderer());
+        this.nameplateRendererRegistry.register(new GlyphNameplateRenderer());
+        this.nameplateRendererRegistry.register(new ImageNameplateRenderer());
+        this.nameplateRendererRegistry.initializeAll();
+
+        this.nameplateCoordinator = new NameplateCoordinator(this.nameplateRendererRegistry);
+
+        // ------------------------------------------------------
         // Tags + ECS systems + commands + listeners
         // ------------------------------------------------------
         TagManager.init(integrations);
 
-        // Register commands
         registerCommands();
-
-        // Register event listeners
         registerListeners();
-
-        // Register ECS systems (playtime + block/damage/death)
         registerEcsSystems();
 
         LOGGER.at(Level.INFO).log("[MysticNameTags] Setup complete!");
@@ -169,7 +191,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         try {
             var ecs = getEntityStoreRegistry();
 
-            // Block / damage / death stat systems
             ecs.registerSystem(new BlockBreakStatSystem());
             ecs.registerSystem(new BlockPlaceStatSystem());
             ecs.registerSystem(new DamageStatSystem());
@@ -199,7 +220,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         LOGGER.at(Level.INFO).log("[MysticNameTags] Started!");
         LOGGER.at(Level.INFO).log("[MysticNameTags] Use /tags help for commands");
 
-        // at.helpch PlaceholderAPI
         try {
             new HelpchPlaceholderHook().register();
         } catch (Throwable t) {
@@ -208,7 +228,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
                             + "Maybe not installed? Disabled helpch placeholder support.");
         }
 
-        // WiFlowPlaceholderAPI
         try {
             new WiFlowPlaceholderHook().register();
         } catch (Throwable t) {
@@ -217,7 +236,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
                             + "Maybe not installed? Disabled Placeholder Support.");
         }
 
-        // Debug: print detected economy backends
         try {
             var manager = net.cfh.vault.VaultUnlockedServicesManager.get();
             LOGGER.at(Level.INFO).log("[MysticNameTags][Debug] Startup Vault econ provider names = "
@@ -245,11 +263,7 @@ public class MysticNameTagsPlugin extends JavaPlugin {
                     .log("[MysticNameTags][Debug] EconomySystem API not reachable at startup");
         }
 
-        // RPGLeveling nameplate refresher (lazy-guarded by config + API checks)
         startLevelSchedulerIfNeeded();
-
-        // Glyph nameplate follow refresher
-        startGlyphFollowSchedulerIfNeeded();
     }
 
     @Override
@@ -261,11 +275,19 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         } catch (Throwable ignored) {
             LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop level scheduler");
         }
+
         try {
-            stopGlyphFollowScheduler();
+            stopQueuedRefreshScheduler();
         } catch (Throwable ignored) {
-            LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop glyph follow scheduler");
+            LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop queued refresh scheduler");
         }
+
+        try {
+            stopRenderScheduler();
+        } catch (Throwable ignored) {
+            LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop render scheduler");
+        }
+
         try {
             if (playtimeService != null) {
                 playtimeService.shutdown();
@@ -273,11 +295,21 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         } catch (Throwable ignored) {
             LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop PlaytimeService");
         }
+
+        try {
+            if (this.nameplateRendererRegistry != null) {
+                this.nameplateRendererRegistry.shutdownAll();
+            }
+        } catch (Throwable ignored) {
+            // no-op
+        }
+
         try {
             PlayerStatManager.shutdownGlobal();
         } catch (Throwable ignored) {
             LOGGER.at(Level.WARNING).log("[MysticNameTags] Failed to stop PlayerStatManager");
         }
+
         try {
             NameplateManager.get().clearAll();
         } catch (Throwable t) {
@@ -300,7 +332,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
                 return false;
             }
 
-            // Safe probe of the API
             org.zuxaw.plugin.api.RPGLevelingAPI api = org.zuxaw.plugin.api.RPGLevelingAPI.get();
             return api != null;
         } catch (Throwable t) {
@@ -309,11 +340,10 @@ public class MysticNameTagsPlugin extends JavaPlugin {
     }
 
     // ------------------------------------------------------
-    // Level scheduler control (startup + reload + shutdown)
+    // Level scheduler control
     // ------------------------------------------------------
 
     private void startLevelSchedulerIfNeeded() {
-        // Only schedule if feature is enabled in config
         if (!Settings.get().isRpgLevelingNameplatesEnabled()) {
             LOGGER.at(Level.INFO)
                     .log("[MysticNameTags] RPGLeveling nameplates disabled in settings; not starting scheduler.");
@@ -322,19 +352,17 @@ public class MysticNameTagsPlugin extends JavaPlugin {
 
         int intervalSec = Settings.get().getRpgLevelingRefreshSeconds();
 
-        // Avoid double-scheduling if something calls this twice
         if (levelScheduler != null && !levelScheduler.isShutdown()) {
             LOGGER.at(Level.FINE)
                     .log("[MysticNameTags] Level scheduler already running; skipping restart.");
             return;
         }
 
-        levelScheduler = Executors.newSingleThreadScheduledExecutor(
-                r -> {
-                    Thread t = new Thread(r, "MysticNameTags-LevelRefresher");
-                    t.setDaemon(true);
-                    return t;
-                });
+        levelScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "MysticNameTags-LevelRefresher");
+            t.setDaemon(true);
+            return t;
+        });
 
         levelScheduler.scheduleAtFixedRate(
                 new LevelNameplateRefreshTask(),
@@ -359,6 +387,77 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         }
     }
 
+    private void startRenderSchedulerIfNeeded() {
+        if (renderScheduler != null && !renderScheduler.isShutdown()) {
+            return;
+        }
+
+        renderScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "MysticNameTags-RenderTick");
+            t.setDaemon(true);
+            return t;
+        });
+
+        renderScheduler.scheduleAtFixedRate(() -> {
+            try {
+                if (this.nameplateCoordinator != null) {
+                    this.nameplateCoordinator.tick();
+                }
+            } catch (Throwable t) {
+                LOGGER.at(Level.WARNING).withCause(t)
+                        .log("[MysticNameTags] Render scheduler tick failed.");
+            }
+        }, 50L, 50L, TimeUnit.MILLISECONDS);
+
+        LOGGER.at(Level.INFO).log("[MysticNameTags] Started render scheduler.");
+    }
+
+    private void stopRenderScheduler() {
+        if (renderScheduler != null) {
+            try {
+                renderScheduler.shutdownNow();
+            } catch (Throwable ignored) {
+            } finally {
+                renderScheduler = null;
+            }
+            LOGGER.at(Level.INFO).log("[MysticNameTags] Stopped render scheduler.");
+        }
+    }
+
+    private void startQueuedRefreshSchedulerIfNeeded() {
+        if (queuedRefreshScheduler != null && !queuedRefreshScheduler.isShutdown()) {
+            return;
+        }
+
+        queuedRefreshScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "MysticNameTags-QueuedRefresh");
+            t.setDaemon(true);
+            return t;
+        });
+
+        queuedRefreshScheduler.scheduleAtFixedRate(
+                new QueuedNameplateRefreshTask(),
+                50L,
+                50L,
+                TimeUnit.MILLISECONDS
+        );
+
+        LOGGER.at(Level.INFO).log("[MysticNameTags] Started queued nameplate refresh scheduler.");
+    }
+
+    private void stopQueuedRefreshScheduler() {
+        if (queuedRefreshScheduler != null) {
+            try {
+                queuedRefreshScheduler.shutdownNow();
+            } catch (Throwable ignored) {
+            } finally {
+                queuedRefreshScheduler = null;
+            }
+
+            LOGGER.at(Level.INFO).log("[MysticNameTags] Stopped queued nameplate refresh scheduler.");
+        }
+    }
+
     // ------------------------------------------------------
     // Reload entrypoint used by /tags reload
     // ------------------------------------------------------
@@ -366,17 +465,15 @@ public class MysticNameTagsPlugin extends JavaPlugin {
     /**
      * Reloads settings, integrations, tags, and restarts the
      * RPGLeveling scheduler using the latest configuration.
-     * <p>
-     * This is intended to be called from /tags reload.
+     *
+     * Intended to be called from /tags reload.
      */
     public void reloadAll() {
         LOGGER.at(Level.INFO).log("[MysticNameTags] Reloading settings, integrations, and tags...");
 
-        // 1) Reload settings.json + language
         Settings.init();
         LanguageManager.get().reload();
 
-        // 3) Re-run integrations init (permissions, prefixes, economies, etc.)
         try {
             this.integrations.init();
             LOGGER.at(Level.INFO).log("[MysticNameTags] Integrations re-initialized after reload.");
@@ -385,14 +482,20 @@ public class MysticNameTagsPlugin extends JavaPlugin {
                     .log("[MysticNameTags] Failed to re-initialize integrations during reload.");
         }
 
-        // 4) Reload tags.json and refresh all online nameplates
         TagManager.reload();
 
-        // 5) Restart RPGLeveling scheduler based on *current* settings
         stopLevelScheduler();
         startLevelSchedulerIfNeeded();
-        stopGlyphFollowScheduler();
-        startGlyphFollowSchedulerIfNeeded();
+
+        stopQueuedRefreshScheduler();
+        startQueuedRefreshSchedulerIfNeeded();
+
+        stopRenderScheduler();
+        startRenderSchedulerIfNeeded();
+
+        if (this.nameplateCoordinator != null) {
+            this.nameplateCoordinator.clearAllState();
+        }
 
         LOGGER.at(Level.INFO).log("[MysticNameTags] Reload complete.");
     }
@@ -404,7 +507,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         }
 
         try {
-            // Ensure class exists
             Class.forName("com.airijko.endlessleveling.EndlessLeveling");
 
             com.airijko.endlessleveling.EndlessLeveling el = com.airijko.endlessleveling.EndlessLeveling.getInstance();
@@ -419,7 +521,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
                 return;
             }
 
-            // Register OUR system so it runs (likely) after theirs and overwrites their label
             this.getEntityStoreRegistry().registerSystem(
                     new com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingNameplateSystem(
                             pdm,
@@ -437,37 +538,11 @@ public class MysticNameTagsPlugin extends JavaPlugin {
         }
     }
 
-    private void startGlyphFollowSchedulerIfNeeded() {
-        if (glyphScheduler != null && !glyphScheduler.isShutdown()) {
-            return;
-        }
-
-        int ticks = Settings.get().getExperimentalGlyphUpdateTicks();
-        long periodNanos = Math.max(1L, ticks) * 50_000_000L;
-
-        glyphScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "MysticNameTags-GlyphFollow");
-            t.setDaemon(true);
-            return t;
-        });
-
-        glyphScheduler.scheduleAtFixedRate(
-                new com.mystichorizons.mysticnametags.nameplate.GlyphNameplateFollowTask(),
-                periodNanos,
-                periodNanos,
-                TimeUnit.NANOSECONDS
-        );
-
-        LOGGER.at(Level.INFO).log(
-                "[MysticNameTags] Started glyph follow scheduler (every " + periodNanos + "ns)."
-        );
-    }
-
-    private void stopGlyphFollowScheduler() {
-        if (glyphScheduler != null) {
-            try { glyphScheduler.shutdownNow(); } catch (Throwable ignored) {}
-            glyphScheduler = null;
-            LOGGER.at(Level.INFO).log("[MysticNameTags] Stopped glyph follow scheduler.");
+    public int getNameplateBatchSize() {
+        try {
+            return Settings.get().getRendering().getImage().getMaxBatchUpdatesPerTick();
+        } catch (Throwable ignored) {
+            return 10;
         }
     }
 }

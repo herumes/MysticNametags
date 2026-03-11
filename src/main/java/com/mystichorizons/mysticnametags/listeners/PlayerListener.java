@@ -1,14 +1,16 @@
 package com.mystichorizons.mysticnametags.listeners;
 
+import com.hypixel.hytale.event.EventRegistry;
 import com.hypixel.hytale.logger.HytaleLogger;
 import com.hypixel.hytale.server.core.event.events.player.PlayerConnectEvent;
 import com.hypixel.hytale.server.core.event.events.player.PlayerDisconnectEvent;
-import com.hypixel.hytale.event.EventRegistry;
 import com.hypixel.hytale.server.core.universe.PlayerRef;
 import com.hypixel.hytale.server.core.universe.world.World;
 import com.mystichorizons.mysticnametags.MysticNameTagsPlugin;
 import com.mystichorizons.mysticnametags.integrations.IntegrationManager;
-import com.mystichorizons.mysticnametags.nameplate.GlyphNameplateManager;
+import com.mystichorizons.mysticnametags.nameplate.NameplateRefreshRequestService;
+import com.mystichorizons.mysticnametags.nameplate.PlayerNameplateSnapshotResolver;
+import com.mystichorizons.mysticnametags.nameplate.state.NameplateDirtyReason;
 import com.mystichorizons.mysticnametags.playtime.PlaytimeService;
 import com.mystichorizons.mysticnametags.stats.PlayerStatManager;
 import com.mystichorizons.mysticnametags.tags.TagManager;
@@ -24,6 +26,10 @@ public class PlayerListener {
     private static final HytaleLogger LOGGER = HytaleLogger.forEnclosingClass();
 
     private final PlaytimeService playtimeService;
+    private final NameplateRefreshRequestService nameplateRefreshRequestService =
+            new NameplateRefreshRequestService();
+    private final PlayerNameplateSnapshotResolver snapshotResolver =
+            new PlayerNameplateSnapshotResolver();
 
     public PlayerListener(@Nonnull PlaytimeService playtimeService) {
         this.playtimeService = playtimeService;
@@ -62,9 +68,6 @@ public class PlayerListener {
 
         UUID uuid = playerRef.getUuid();
 
-        // ─────────────────────────────────────────────
-        // Stats: initialize session stats for this player
-        // ─────────────────────────────────────────────
         try {
             PlayerStatManager mgr = PlayerStatManager.get();
             if (mgr != null) {
@@ -75,9 +78,6 @@ public class PlayerListener {
                     .log("[MysticNameTags] Failed to initialize PlayerStatManager session on join for %s", uuid);
         }
 
-        // ─────────────────────────────────────────────
-        // Playtime: mark player as online for ticking
-        // ─────────────────────────────────────────────
         try {
             playtimeService.markOnline(uuid);
         } catch (Throwable t) {
@@ -85,27 +85,36 @@ public class PlayerListener {
                     .log("[MysticNameTags] Failed to mark player online for playtime tracking: %s", uuid);
         }
 
-        // Track + refresh nameplate
         TagManager tagManager = TagManager.get();
         tagManager.trackOnlinePlayer(playerRef, world);
-        tagManager.refreshNameplate(playerRef, world);
 
-        // ─────────────────────────────────────────────
-        // Update notification for admins
-        // ─────────────────────────────────────────────
+        // Immediate coordinated refresh for join so the new renderer system owns startup state.
+        try {
+            MysticNameTagsPlugin plugin = MysticNameTagsPlugin.getInstance();
+            if (plugin != null && plugin.getNameplateCoordinator() != null) {
+                var snapshot = snapshotResolver.resolve(playerRef);
+                plugin.getNameplateCoordinator().refreshImmediately(
+                        playerRef,
+                        snapshot,
+                        com.mystichorizons.mysticnametags.nameplate.state.NameplateDirtyReason.PLAYER_JOIN
+                );
+            }
+        } catch (Throwable t) {
+            LOGGER.at(Level.FINE).withCause(t)
+                    .log("[MysticNameTags] Failed to perform immediate coordinated nameplate refresh on join.");
+        }
+
         try {
             MysticNameTagsPlugin plugin = MysticNameTagsPlugin.getInstance();
             if (plugin != null) {
                 UpdateChecker checker = plugin.getUpdateChecker();
                 if (checker != null && checker.hasVersionInfo() && checker.isUpdateAvailable()) {
-
-                    // Permission: mysticnametags.admin.update
                     IntegrationManager integrations = tagManager.getIntegrations();
                     if (integrations != null &&
                             integrations.hasPermission(playerRef, "mysticnametags.admin.update")) {
 
                         String current = checker.getCurrentVersion();
-                        String latest  = checker.getLatestVersion();
+                        String latest = checker.getLatestVersion();
 
                         playerRef.sendMessage(
                                 ColorFormatter.toMessage(
@@ -149,9 +158,19 @@ public class PlayerListener {
                     .log("[MysticNameTags] Failed to finalize PlayerStatManager session on quit for %s", uuid);
         }
 
-        World world = TagManager.get().getOnlineWorld(uuid);
-        if (world != null) {
-            GlyphNameplateManager.get().remove(uuid, world);
+        try {
+            nameplateRefreshRequestService.remove(playerRef);
+        } catch (Throwable t) {
+            LOGGER.at(Level.FINE).withCause(t)
+                    .log("[MysticNameTags] Failed to remove coordinated nameplate state on quit.");
+        }
+
+        try {
+            var plugin = MysticNameTagsPlugin.getInstance();
+            if (plugin != null && plugin.getNameplateCoordinator() != null && world != null) {
+                plugin.getNameplateCoordinator().clear(playerRef, world);
+            }
+        } catch (Throwable ignored) {
         }
 
         try {

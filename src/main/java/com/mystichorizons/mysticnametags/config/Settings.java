@@ -6,6 +6,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.hypixel.hytale.logger.HytaleLogger;
 import com.mystichorizons.mysticnametags.MysticNameTagsPlugin;
+import com.mystichorizons.mysticnametags.config.render.RenderingSettings;
 import com.mystichorizons.mysticnametags.util.ColorFormatter;
 
 import javax.annotation.Nonnull;
@@ -16,7 +17,6 @@ import java.io.FileWriter;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -30,13 +30,16 @@ public final class Settings {
 
     private static Settings INSTANCE;
 
+    // ---------------------------------------------------------------------
     // Core Settings
+    // ---------------------------------------------------------------------
+
     private String nameplateFormat = "{rank} {name} {tag}";
     private boolean stripExtraSpaces = true;
     private String language = "en_US";
 
     /**
-     * Delay in seconds before a player can EQUIP a *different* tag again.
+     * Delay in seconds before a player can equip a different tag again.
      * 0 = no cooldown.
      */
     private int tagDelaysecs = 20;
@@ -45,71 +48,74 @@ public final class Settings {
     // Storage backend (FILE / SQLITE / MYSQL)
     // ---------------------------------------------------------------------
 
-    private String storageBackend = "FILE"; // FILE, SQLITE, MYSQL
-
-    // SQLite options (relative to plugin data folder)
+    private String storageBackend = "FILE";
     private String sqliteFile = "playerdata.db";
 
-    // MySQL options
     private String mysqlHost = "localhost";
-    private int    mysqlPort = 3306;
+    private int mysqlPort = 3306;
     private String mysqlDatabase = "mysticnametags";
     private String mysqlUser = "root";
     private String mysqlPassword = "password";
 
-    // Playtime Setup
+    // ---------------------------------------------------------------------
+    // Playtime
+    // ---------------------------------------------------------------------
+
     private String playtimeProvider = "AUTO"; // AUTO, INTERNAL, ZIB_PLAYTIME, NONE
 
-    // --- Nameplate toggles ------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Nameplate toggles
+    // ---------------------------------------------------------------------
 
-    /** Master toggle for MysticNameTags nameplates (default ON). */
+    /** Master toggle for MysticNameTags nameplates. */
     private boolean nameplatesEnabled = true;
 
     /** If true, use a default tag when player has no equipped tag. */
     private boolean defaultTagEnabled = false;
 
-    /** Tag id from tags.json to use as default (e.g. "mystic"). */
+    /** Tag id from tags.json to use as default. */
     private String defaultTagId = "mystic";
 
-    /** EndlessLeveling integration (default off). */
+    // ---------------------------------------------------------------------
+    // EndlessLeveling integration
+    // ---------------------------------------------------------------------
+
     private boolean endlessLevelingNameplatesEnabled = false;
-
-    /** EndlessLeveling Integration for RACE DISPLAY */
     private boolean endlessRaceDisplay = false;
-
-    /** EndlessLeveling prestige display toggle. */
     private boolean endlessPrestigeDisplay = false;
-
-    /** Prefix used before prestige number in EL nameplates. Example: "P" -> "P3". */
     private String endlessPrestigePrefix = "P";
 
-    // --- Placeholder toggles -------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Placeholder toggles
+    // ---------------------------------------------------------------------
 
     /**
      * If true, MysticNameTags will run WiFlowPlaceholderAPI on the built nameplate text.
-     * If auto-detect is enabled, this value will be overwritten by detection.
+     * If auto-detect is enabled, this value may be overwritten by detection.
      */
     private boolean wiFlowPlaceholdersEnabled = false;
 
     /**
      * If true, MysticNameTags will run at.helpch.placeholderapi on the built nameplate text.
-     * If auto-detect is enabled, this value will be overwritten by detection.
+     * If auto-detect is enabled, this value may be overwritten by detection.
      */
     private boolean helpchPlaceholderApiEnabled = false;
 
     /**
-     * NEW: If true, plugin will auto-detect WiFlowPlaceholderAPI presence and toggle wiFlowPlaceholdersEnabled.
+     * If true, plugin will auto-detect WiFlowPlaceholderAPI presence and toggle wiFlowPlaceholdersEnabled.
      * If false, wiFlowPlaceholdersEnabled is treated as an explicit admin override.
      */
     private boolean wiFlowPlaceholdersAutoDetect = true;
 
     /**
-     * NEW: If true, plugin will auto-detect at.helpch PlaceholderAPI presence and toggle helpchPlaceholderApiEnabled.
+     * If true, plugin will auto-detect at.helpch PlaceholderAPI presence and toggle helpchPlaceholderApiEnabled.
      * If false, helpchPlaceholderApiEnabled is treated as an explicit admin override.
      */
     private boolean helpchPlaceholderApiAutoDetect = true;
 
-    // --- Economy / permission / RPG flags -----------------------------------
+    // ---------------------------------------------------------------------
+    // Economy / permission / RPG flags
+    // ---------------------------------------------------------------------
 
     private boolean economySystemEnabled = true;
     private boolean useCoinSystem = false;
@@ -120,25 +126,26 @@ public final class Settings {
     private boolean rpgLevelingNameplatesEnabled = false;
     private int rpgLevelingRefreshSeconds = 30;
 
-    // --- Commands / features -------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Commands / features
+    // ---------------------------------------------------------------------
 
     /**
-     * If true, enables the "owned tags" command/UI (e.g. /tags owned).
-     * Nullable for backward compat.
+     * If true, enables the owned tags command/UI.
+     * Nullable for backward compatibility.
      */
     private Boolean ownedTagsCommandEnabled = Boolean.TRUE;
 
-    // --- Experimental glyph / hologram nameplates ----------------------------
-
-    private boolean experimentalGlyphNameplatesEnabled = false;
-    private int experimentalGlyphMaxChars = 32;
-    private int experimentalGlyphUpdateTicks = 10; // 10 ticks -> 500ms
-    private float experimentalGlyphRenderDistance = 24.0f;
-    private int experimentalGlyphMaxEntitiesPerPlayer = 40;
-
+    // ---------------------------------------------------------------------
+    // Rendering
     // ---------------------------------------------------------------------
 
-    // Not serialized
+    private RenderingSettings rendering = new RenderingSettings();
+
+    // ---------------------------------------------------------------------
+    // Non-serialized state
+    // ---------------------------------------------------------------------
+
     private transient boolean dirty = false;
 
     public static void init() {
@@ -159,7 +166,6 @@ public final class Settings {
         File file = getFile();
 
         if (!file.exists()) {
-            // First run – defaults + auto-detection
             applyAutoPlaceholderDetection(true);
             dirty = true;
             saveIfDirty();
@@ -169,46 +175,56 @@ public final class Settings {
         try (FileReader reader = new FileReader(file)) {
             Settings loaded = GSON.fromJson(reader, Settings.class);
             if (loaded != null) {
+                // -----------------------------------------------------------------
                 // Core
-                this.nameplateFormat  = nonBlankOr(loaded.nameplateFormat, this.nameplateFormat);
+                // -----------------------------------------------------------------
+                this.nameplateFormat = nonBlankOr(loaded.nameplateFormat, this.nameplateFormat);
                 this.stripExtraSpaces = loaded.stripExtraSpaces;
-                this.language         = nonBlankOr(loaded.language, this.language);
-                this.tagDelaysecs     = Math.max(0, loaded.tagDelaysecs);
+                this.language = nonBlankOr(loaded.language, this.language);
+                this.tagDelaysecs = Math.max(0, loaded.tagDelaysecs);
 
+                // -----------------------------------------------------------------
                 // Storage
+                // -----------------------------------------------------------------
                 this.storageBackend = nonBlankOr(loaded.storageBackend, this.storageBackend);
-                this.sqliteFile     = nonBlankOr(loaded.sqliteFile, this.sqliteFile);
+                this.sqliteFile = nonBlankOr(loaded.sqliteFile, this.sqliteFile);
 
-                this.mysqlHost      = nonBlankOr(loaded.mysqlHost, this.mysqlHost);
-                this.mysqlPort      = (loaded.mysqlPort <= 0 ? this.mysqlPort : loaded.mysqlPort);
-                this.mysqlDatabase  = nonBlankOr(loaded.mysqlDatabase, this.mysqlDatabase);
-                this.mysqlUser      = nonBlankOr(loaded.mysqlUser, this.mysqlUser);
-                this.mysqlPassword  = (loaded.mysqlPassword == null ? this.mysqlPassword : loaded.mysqlPassword);
+                this.mysqlHost = nonBlankOr(loaded.mysqlHost, this.mysqlHost);
+                this.mysqlPort = (loaded.mysqlPort <= 0 ? this.mysqlPort : loaded.mysqlPort);
+                this.mysqlDatabase = nonBlankOr(loaded.mysqlDatabase, this.mysqlDatabase);
+                this.mysqlUser = nonBlankOr(loaded.mysqlUser, this.mysqlUser);
+                this.mysqlPassword = (loaded.mysqlPassword == null ? this.mysqlPassword : loaded.mysqlPassword);
 
+                // -----------------------------------------------------------------
                 // Playtime
+                // -----------------------------------------------------------------
                 this.playtimeProvider = nonBlankOr(loaded.playtimeProvider, this.playtimeProvider);
 
+                // -----------------------------------------------------------------
                 // Nameplates
+                // -----------------------------------------------------------------
                 this.nameplatesEnabled = loaded.nameplatesEnabled;
                 this.defaultTagEnabled = loaded.defaultTagEnabled;
-                this.defaultTagId      = nonBlankOr(loaded.defaultTagId, this.defaultTagId);
+                this.defaultTagId = nonBlankOr(loaded.defaultTagId, this.defaultTagId);
 
+                // -----------------------------------------------------------------
+                // EndlessLeveling
+                // -----------------------------------------------------------------
                 this.endlessLevelingNameplatesEnabled = loaded.endlessLevelingNameplatesEnabled;
-                this.endlessRaceDisplay               = loaded.endlessRaceDisplay;
-                this.endlessPrestigeDisplay           = loaded.endlessPrestigeDisplay;
-                this.endlessPrestigePrefix            = nonBlankOr(loaded.endlessPrestigePrefix, this.endlessPrestigePrefix);
+                this.endlessRaceDisplay = loaded.endlessRaceDisplay;
+                this.endlessPrestigeDisplay = loaded.endlessPrestigeDisplay;
+                this.endlessPrestigePrefix = nonBlankOr(loaded.endlessPrestigePrefix, this.endlessPrestigePrefix);
 
-                // Placeholder toggles + auto flags (new fields default to true if missing)
-                this.wiFlowPlaceholdersEnabled   = loaded.wiFlowPlaceholdersEnabled;
+                // -----------------------------------------------------------------
+                // Placeholder toggles
+                // -----------------------------------------------------------------
+                this.wiFlowPlaceholdersEnabled = loaded.wiFlowPlaceholdersEnabled;
                 this.helpchPlaceholderApiEnabled = loaded.helpchPlaceholderApiEnabled;
 
-                this.wiFlowPlaceholdersAutoDetect =
-                        loaded.wiFlowPlaceholdersAutoDetect; // default false if missing in very old? handled below
-                this.helpchPlaceholderApiAutoDetect =
-                        loaded.helpchPlaceholderApiAutoDetect;
+                this.wiFlowPlaceholdersAutoDetect = loaded.wiFlowPlaceholdersAutoDetect;
+                this.helpchPlaceholderApiAutoDetect = loaded.helpchPlaceholderApiAutoDetect;
 
-                // If config predates these flags, Gson will deserialize them as false.
-                // We want "auto" to be the default for older configs.
+                // For older configs where these keys do not exist, default them to true.
                 if (!hasKeyInJson(file, "wiFlowPlaceholdersAutoDetect")) {
                     this.wiFlowPlaceholdersAutoDetect = true;
                     dirty = true;
@@ -218,26 +234,32 @@ public final class Settings {
                     dirty = true;
                 }
 
-                // Economy & permissions
-                this.economySystemEnabled   = loaded.economySystemEnabled;
-                this.useCoinSystem          = loaded.useCoinSystem;
+                // -----------------------------------------------------------------
+                // Economy / permissions / RPG
+                // -----------------------------------------------------------------
+                this.economySystemEnabled = loaded.economySystemEnabled;
+                this.useCoinSystem = loaded.useCoinSystem;
                 this.usePhysicalCoinEconomy = loaded.usePhysicalCoinEconomy;
-                this.fullPermissionGate     = loaded.fullPermissionGate;
-                this.permissionGate         = loaded.permissionGate;
+                this.fullPermissionGate = loaded.fullPermissionGate;
+                this.permissionGate = loaded.permissionGate;
 
-                // RPG
                 this.rpgLevelingNameplatesEnabled = loaded.rpgLevelingNameplatesEnabled;
-                this.rpgLevelingRefreshSeconds    = loaded.rpgLevelingRefreshSeconds;
+                this.rpgLevelingRefreshSeconds = loaded.rpgLevelingRefreshSeconds;
 
+                // -----------------------------------------------------------------
                 // Commands
+                // -----------------------------------------------------------------
                 this.ownedTagsCommandEnabled = loaded.ownedTagsCommandEnabled;
 
-                // Glyph
-                this.experimentalGlyphNameplatesEnabled = loaded.experimentalGlyphNameplatesEnabled;
-                this.experimentalGlyphMaxChars          = loaded.experimentalGlyphMaxChars;
-                this.experimentalGlyphUpdateTicks       = loaded.experimentalGlyphUpdateTicks;
-                this.experimentalGlyphRenderDistance    = loaded.experimentalGlyphRenderDistance;
-                this.experimentalGlyphMaxEntitiesPerPlayer = loaded.experimentalGlyphMaxEntitiesPerPlayer;
+                // -----------------------------------------------------------------
+                // Rendering
+                // -----------------------------------------------------------------
+                if (loaded.rendering != null) {
+                    this.rendering = loaded.rendering;
+                } else {
+                    this.rendering = new RenderingSettings();
+                    dirty = true;
+                }
             }
         } catch (Exception e) {
             LOGGER.at(Level.WARNING).withCause(e)
@@ -245,19 +267,18 @@ public final class Settings {
             dirty = true;
         }
 
-        // After loading, auto-enable/disable placeholder backends
         applyAutoPlaceholderDetection(false);
-
-        // Clamp/normalize any values (may mark dirty)
         normalizeAndClamp();
-
         saveToDisk();
         dirty = false;
     }
 
     private void normalizeAndClamp() {
-        // normalize string fields
         String before;
+
+        // ---------------------------------------------------------------------
+        // Normalize strings
+        // ---------------------------------------------------------------------
 
         before = this.storageBackend;
         this.storageBackend = getStorageBackendRaw();
@@ -287,7 +308,10 @@ public final class Settings {
         this.endlessPrestigePrefix = nonBlankOr(this.endlessPrestigePrefix, "P");
         if (!safeEquals(before, this.endlessPrestigePrefix)) dirty = true;
 
-        // clamps
+        // ---------------------------------------------------------------------
+        // Clamp primitives
+        // ---------------------------------------------------------------------
+
         int oldDelay = this.tagDelaysecs;
         this.tagDelaysecs = Math.max(0, this.tagDelaysecs);
         if (oldDelay != this.tagDelaysecs) dirty = true;
@@ -296,31 +320,48 @@ public final class Settings {
         this.rpgLevelingRefreshSeconds = Math.max(5, this.rpgLevelingRefreshSeconds);
         if (oldRpg != this.rpgLevelingRefreshSeconds) dirty = true;
 
-        int oldGlyphChars = this.experimentalGlyphMaxChars;
-        this.experimentalGlyphMaxChars = Math.max(8, this.experimentalGlyphMaxChars);
-        if (oldGlyphChars != this.experimentalGlyphMaxChars) dirty = true;
+        // ---------------------------------------------------------------------
+        // Rendering
+        // ---------------------------------------------------------------------
 
-        int oldGlyphTicks = this.experimentalGlyphUpdateTicks;
-        this.experimentalGlyphUpdateTicks = Math.max(1, this.experimentalGlyphUpdateTicks);
-        if (oldGlyphTicks != this.experimentalGlyphUpdateTicks) dirty = true;
+        if (this.rendering == null) {
+            this.rendering = new RenderingSettings();
+            dirty = true;
+        }
 
-        float oldDist = this.experimentalGlyphRenderDistance;
-        this.experimentalGlyphRenderDistance = Math.max(8f, this.experimentalGlyphRenderDistance);
-        if (Float.compare(oldDist, this.experimentalGlyphRenderDistance) != 0) dirty = true;
+        this.rendering.getGlyph().setMaxChars(this.rendering.getGlyph().getMaxChars());
+        this.rendering.getGlyph().setUpdateTicks(this.rendering.getGlyph().getUpdateTicks());
+        this.rendering.getGlyph().setRenderDistance(this.rendering.getGlyph().getRenderDistance());
+        this.rendering.getGlyph().setMaxEntitiesPerPlayer(this.rendering.getGlyph().getMaxEntitiesPerPlayer());
 
-        float oldMax = this.experimentalGlyphMaxEntitiesPerPlayer;
-        this.experimentalGlyphMaxEntitiesPerPlayer = Math.max(8, this.experimentalGlyphMaxEntitiesPerPlayer);
-        if (Float.compare(oldMax, this.experimentalGlyphMaxEntitiesPerPlayer) !=0 ) dirty  = true;
+        this.rendering.getImage().setMinTicksBetweenUpdates(this.rendering.getImage().getMinTicksBetweenUpdates());
+        this.rendering.getImage().setPlaceholderRefreshTicks(this.rendering.getImage().getPlaceholderRefreshTicks());
+        this.rendering.getImage().setMovementRefreshTicks(this.rendering.getImage().getMovementRefreshTicks());
+        this.rendering.getImage().setMaxBatchUpdatesPerTick(this.rendering.getImage().getMaxBatchUpdatesPerTick());
+        this.rendering.getImage().setRenderDistance(this.rendering.getImage().getRenderDistance());
+        this.rendering.getImage().setVerticalOffset(this.rendering.getImage().getVerticalOffset());
+        this.rendering.getImage().setMaxCachedLayouts(this.rendering.getImage().getMaxCachedLayouts());
+
+        this.rendering.getImage().getLayout().setMaxLines(this.rendering.getImage().getLayout().getMaxLines());
+        this.rendering.getImage().getLayout().setPaddingX(this.rendering.getImage().getLayout().getPaddingX());
+        this.rendering.getImage().getLayout().setPaddingY(this.rendering.getImage().getLayout().getPaddingY());
+        this.rendering.getImage().getLayout().setLineSpacing(this.rendering.getImage().getLayout().getLineSpacing());
+        this.rendering.getImage().getLayout().setMinWidth(this.rendering.getImage().getLayout().getMinWidth());
+        this.rendering.getImage().getLayout().setMaxWidth(this.rendering.getImage().getLayout().getMaxWidth());
+        this.rendering.getImage().getLayout().setIconSize(this.rendering.getImage().getLayout().getIconSize());
     }
 
     private void saveIfDirty() {
-        if (!dirty) return;
+        if (!dirty) {
+            return;
+        }
         saveToDisk();
         dirty = false;
     }
 
     /**
-     * Writes the current in-memory settings to settings.json with ordered sections and inline doc fields.
+     * Writes the current in-memory settings to settings.json with ordered sections
+     * and human-readable pseudo-comment keys.
      */
     private void saveToDisk() {
         File file = getFile();
@@ -328,7 +369,6 @@ public final class Settings {
             JsonObject root = GSON.toJsonTree(this).getAsJsonObject();
             JsonObject out = new JsonObject();
 
-            // Track copied keys so we can preserve unknown future keys
             Set<String> copied = new HashSet<>();
 
             Consumer<String> copy = (key) -> {
@@ -338,28 +378,31 @@ public final class Settings {
                 }
             };
 
-            out.addProperty("_", "MysticNameTags settings.json – edit & reload/restart to apply changes.");
+            out.addProperty("_", "MysticNameTags settings.json");
+            out.addProperty("__info_1", "Edit this file, then reload or restart the plugin.");
+            out.addProperty("__info_2", "Keys starting with underscores are informational only and are ignored by the plugin.");
 
             // ------------------------------------------------------------------
-            // 1) Core
+            // Core
             // ------------------------------------------------------------------
-            out.addProperty("__core",
-                    "Core nameplate settings.\n" +
-                            "nameplateFormat = tokens: {rank}, {name}, {tag}\n" +
-                            "stripExtraSpaces = condense multiple spaces\n" +
-                            "language = locale bundle (e.g. en_US)\n" +
-                            "tagDelaysecs = cooldown (seconds) before equipping a DIFFERENT tag again (0 = off)");
+            out.addProperty("__core", "=== Core Settings ===");
+            out.addProperty("__core_1", "nameplateFormat supports: {rank}, {name}, {tag}");
+            out.addProperty("__core_2", "stripExtraSpaces condenses repeated spaces.");
+            out.addProperty("__core_3", "language is the locale bundle, for example en_US.");
+            out.addProperty("__core_4", "tagDelaysecs is the cooldown before equipping a different tag again.");
             copy.accept("nameplateFormat");
             copy.accept("stripExtraSpaces");
             copy.accept("language");
             copy.accept("tagDelaysecs");
 
             // ------------------------------------------------------------------
-            // 2) Storage
+            // Storage
             // ------------------------------------------------------------------
-            out.addProperty("__storage",
-                    "Storage backend for tag ownership data.\n" +
-                            "storageBackend = FILE / SQLITE / MYSQL");
+            out.addProperty("__storage", "=== Storage Settings ===");
+            out.addProperty("__storage_1", "storageBackend controls player/tag ownership storage.");
+            out.addProperty("__storage_2", "Valid values: FILE, SQLITE, MYSQL.");
+            out.addProperty("__storage_3", "sqliteFile is relative to the plugin data folder.");
+            out.addProperty("__storage_4", "MySQL settings are only used when storageBackend is MYSQL.");
             copy.accept("storageBackend");
             copy.accept("sqliteFile");
             copy.accept("mysqlHost");
@@ -369,45 +412,45 @@ public final class Settings {
             copy.accept("mysqlPassword");
 
             // ------------------------------------------------------------------
-            // 3) Nameplates
+            // Nameplates
             // ------------------------------------------------------------------
-            out.addProperty("__nameplates",
-                    "Nameplate behavior.\n" +
-                            "nameplatesEnabled = master toggle\n" +
-                            "defaultTagEnabled = use defaultTagId when no tag equipped\n" +
-                            "defaultTagId must match tags.json id");
+            out.addProperty("__nameplates", "=== Nameplate Settings ===");
+            out.addProperty("__nameplates_1", "nameplatesEnabled is the master toggle for MysticNameTags nameplates.");
+            out.addProperty("__nameplates_2", "defaultTagEnabled applies defaultTagId when no tag is equipped.");
+            out.addProperty("__nameplates_3", "defaultTagId must match a valid id from tags.json.");
             copy.accept("nameplatesEnabled");
             copy.accept("defaultTagEnabled");
             copy.accept("defaultTagId");
 
             // ------------------------------------------------------------------
-            // 4) EndlessLeveling
+            // EndlessLeveling
             // ------------------------------------------------------------------
-            out.addProperty("__endless",
-                    "EndlessLeveling integration toggles.");
+            out.addProperty("__endless", "=== EndlessLeveling Integration ===");
+            out.addProperty("__endless_1", "These settings control optional EndlessLeveling display features.");
+            out.addProperty("__endless_2", "endlessPrestigePrefix is used before the prestige number, for example P3.");
             copy.accept("endlessLevelingNameplatesEnabled");
             copy.accept("endlessRaceDisplay");
             copy.accept("endlessPrestigeDisplay");
             copy.accept("endlessPrestigePrefix");
 
             // ------------------------------------------------------------------
-            // 5) Placeholders
+            // Placeholders
             // ------------------------------------------------------------------
-            out.addProperty("__placeholders",
-                    "Placeholder APIs.\n" +
-                            "Auto-detect flags control whether detection can override the enabled flags.");
+            out.addProperty("__placeholders", "=== Placeholder Settings ===");
+            out.addProperty("__placeholders_1", "Auto-detect flags allow the plugin to enable or disable support automatically.");
+            out.addProperty("__placeholders_2", "If auto-detect is false, the enabled toggle acts as a manual override.");
             copy.accept("wiFlowPlaceholdersAutoDetect");
             copy.accept("wiFlowPlaceholdersEnabled");
             copy.accept("helpchPlaceholderApiAutoDetect");
             copy.accept("helpchPlaceholderApiEnabled");
 
             // ------------------------------------------------------------------
-            // 6) Economy / permissions
+            // Economy / permissions
             // ------------------------------------------------------------------
-            out.addProperty("__economy",
-                    "Tag purchasing & permission gating.\n" +
-                            "fullPermissionGate = permission node fully gates tags (can hide/block access).\n" +
-                            "permissionGate = tag remains visible, but permission node is required to unlock/equip.");
+            out.addProperty("__economy", "=== Economy And Permission Settings ===");
+            out.addProperty("__economy_1", "economySystemEnabled controls paid tag support.");
+            out.addProperty("__economy_2", "fullPermissionGate fully gates tags by permission.");
+            out.addProperty("__economy_3", "permissionGate keeps tags visible but requires permission to unlock or equip.");
             copy.accept("economySystemEnabled");
             copy.accept("useCoinSystem");
             copy.accept("usePhysicalCoinEconomy");
@@ -415,34 +458,31 @@ public final class Settings {
             copy.accept("permissionGate");
 
             // ------------------------------------------------------------------
-            // 7) RPGLeveling
+            // RPGLeveling
             // ------------------------------------------------------------------
-            out.addProperty("__rpg",
-                    "RPGLeveling integration.");
+            out.addProperty("__rpg", "=== RPGLeveling Integration ===");
+            out.addProperty("__rpg_1", "rpgLevelingRefreshSeconds controls how often RPGLeveling nameplates refresh.");
             copy.accept("rpgLevelingNameplatesEnabled");
             copy.accept("rpgLevelingRefreshSeconds");
 
             // ------------------------------------------------------------------
-            // 8) Playtime + commands
+            // Playtime + commands
             // ------------------------------------------------------------------
-            out.addProperty("__playtime",
-                    "Playtime provider + extra commands.\n" +
-                            "playtimeProvider = AUTO / INTERNAL / ZIB_PLAYTIME / NONE");
+            out.addProperty("__playtime", "=== Playtime And Commands ===");
+            out.addProperty("__playtime_1", "playtimeProvider valid values: AUTO, INTERNAL, ZIB_PLAYTIME, NONE.");
+            out.addProperty("__playtime_2", "ownedTagsCommandEnabled controls the owned tags command/UI.");
             copy.accept("playtimeProvider");
             copy.accept("ownedTagsCommandEnabled");
 
             // ------------------------------------------------------------------
-            // 9) Experimental glyph nameplates
+            // Rendering
             // ------------------------------------------------------------------
-            out.addProperty("__experimental_glyph_nameplates",
-                    "⚠ EXPERIMENTAL ⚠\n" +
-                            "Glyph nameplates spawn an entity per character (expensive).\n" +
-                            "Keep disabled unless testing with low player counts.");
-            copy.accept("experimentalGlyphNameplatesEnabled");
-            copy.accept("experimentalGlyphMaxChars");
-            copy.accept("experimentalGlyphUpdateTicks");
-            copy.accept("experimentalGlyphRenderDistance");
-            copy.accept("experimentalGlyphMaxEntitiesPerPlayer");
+            out.addProperty("__rendering", "=== Rendering Settings ===");
+            out.addProperty("__rendering_1", "rendering.mode controls the active renderer.");
+            out.addProperty("__rendering_2", "Valid values: VANILLA_TEXT, GLYPH, IMAGE.");
+            out.addProperty("__rendering_3", "rendering.glyph contains glyph renderer settings.");
+            out.addProperty("__rendering_4", "rendering.image contains image-nameplate renderer settings.");
+            copy.accept("rendering");
 
             // ------------------------------------------------------------------
             // Preserve unknown / future fields
@@ -454,8 +494,9 @@ public final class Settings {
                 if (copied.contains(key)) continue;
                 other.add(key, entry.getValue());
             }
+
             if (!other.entrySet().isEmpty()) {
-                out.addProperty("__other", "=== Other / future settings ===");
+                out.addProperty("__other", "=== Other / Future Settings ===");
                 for (Map.Entry<String, JsonElement> e : other.entrySet()) {
                     out.add(e.getKey(), e.getValue());
                 }
@@ -476,7 +517,6 @@ public final class Settings {
         boolean wiFlowPresent = classPresent("com.wiflow.placeholderapi.WiFlowPlaceholderAPI");
         boolean helpchPresent = classPresent("at.helpch.placeholderapi.PlaceholderAPI");
 
-        // Only auto-toggle if auto-detect is enabled OR it's the first run (defaults)
         if (firstRun || this.wiFlowPlaceholdersAutoDetect) {
             if (this.wiFlowPlaceholdersEnabled != wiFlowPresent) {
                 this.wiFlowPlaceholdersEnabled = wiFlowPresent;
@@ -491,7 +531,6 @@ public final class Settings {
             }
         }
 
-        // Log state
         LOGGER.at(Level.INFO).log("[MysticNameTags] WiFlowPlaceholderAPI present=" + wiFlowPresent
                 + " | enabled=" + wiFlowPlaceholdersEnabled
                 + " | autoDetect=" + wiFlowPlaceholdersAutoDetect);
@@ -541,7 +580,7 @@ public final class Settings {
         String result = nameplateFormat
                 .replace("{rank}", rank == null ? "" : rank)
                 .replace("{name}", name == null ? "" : name)
-                .replace("{tag}",  tag == null ? "" : tag);
+                .replace("{tag}", tag == null ? "" : tag);
 
         if (stripExtraSpaces) {
             result = result.replaceAll("\\s+", " ").trim();
@@ -561,12 +600,14 @@ public final class Settings {
 
     public String getStorageBackendRaw() {
         return (storageBackend == null || storageBackend.isBlank())
-                ? "FILE" : storageBackend.trim().toUpperCase();
+                ? "FILE"
+                : storageBackend.trim().toUpperCase();
     }
 
     public String getSqliteFile() {
         return (sqliteFile == null || sqliteFile.isBlank())
-                ? "playerdata.db" : sqliteFile.trim();
+                ? "playerdata.db"
+                : sqliteFile.trim();
     }
 
     public String getMysqlHost() {
@@ -579,7 +620,8 @@ public final class Settings {
 
     public String getMysqlDatabase() {
         return (mysqlDatabase == null || mysqlDatabase.isBlank())
-                ? "mysticnametags" : mysqlDatabase.trim();
+                ? "mysticnametags"
+                : mysqlDatabase.trim();
     }
 
     public String getMysqlUser() {
@@ -652,11 +694,14 @@ public final class Settings {
 
     public String getEndlessPrestigePrefix() {
         return (endlessPrestigePrefix == null || endlessPrestigePrefix.isBlank())
-                ? "P" : endlessPrestigePrefix.trim();
+                ? "P"
+                : endlessPrestigePrefix.trim();
     }
 
     public String getLanguage() {
-        return (language == null || language.trim().isEmpty()) ? "en_US" : language.trim();
+        return (language == null || language.trim().isEmpty())
+                ? "en_US"
+                : language.trim();
     }
 
     public boolean isOwnedTagsCommandEnabled() {
@@ -675,23 +720,10 @@ public final class Settings {
         return Math.max(0, tagDelaysecs);
     }
 
-    public boolean isExperimentalGlyphNameplatesEnabled() {
-        return experimentalGlyphNameplatesEnabled;
-    }
-
-    public int getExperimentalGlyphMaxChars() {
-        return Math.max(8, experimentalGlyphMaxChars);
-    }
-
-    public int getExperimentalGlyphUpdateTicks() {
-        return Math.max(1, experimentalGlyphUpdateTicks);
-    }
-
-    public float getExperimentalGlyphRenderDistance() {
-        return Math.max(8f, experimentalGlyphRenderDistance);
-    }
-
-    public int getExperimentalGlyphMaxEntitiesPerPlayer() {
-        return Math.max(8, experimentalGlyphMaxEntitiesPerPlayer);
+    public RenderingSettings getRendering() {
+        if (rendering == null) {
+            rendering = new RenderingSettings();
+        }
+        return rendering;
     }
 }
