@@ -911,4 +911,68 @@ public class IntegrationManager {
         // 3) Fall back to whatever direct resolution gave us.
         return direct;
     }
+
+    // Dashboard UI Getters
+
+    public boolean isPrefixesPlusAvailable() {
+        return prefixesPlusSupport != null && prefixesPlusSupport.isAvailable();
+    }
+
+    public boolean isAnyPrefixProviderAvailable() {
+        return isPrefixesPlusAvailable()
+                || isHyperPermsAvailable()
+                || isLuckPermsAvailable();
+    }
+
+    @Nonnull
+    public String getActivePermissionBackendName() {
+        return switch (activePermissionBackend) {
+            case LUCKPERMS -> "LuckPerms";
+            case HYPERPERMS -> "HyperPerms";
+            case PERMISSIONS_PLUS -> "PermissionsPlus";
+            case NATIVE -> "Native Hytale Permissions";
+        };
+    }
+
+    @Nonnull
+    public String getPlaytimeProviderName() {
+        PlaytimeProvider provider = this.playtimeProvider;
+        if (provider == null) {
+            return "None";
+        }
+        return provider.getClass().getSimpleName();
+    }
+
+    public boolean isItemRequirementHandlerAvailable() {
+        return itemRequirementHandler != null;
+    }
+
+    public boolean isStatProviderAvailable() {
+        return statProvider != null;
+    }
+
+    public boolean isEndlessLevelingNameplateAttached() {
+        return endlessNameplateSystem != null;
+    }
+
+    public boolean isCoinsAndMarketsAvailable() {
+        return coinsAndMarketsBackend != null && coinsAndMarketsBackend.isAvailable();
+    }
+
+    @Nonnull
+    public java.util.List<String> getAvailableLedgerBackendNames() {
+        if (ledgerBackends == null || ledgerBackends.isEmpty()) {
+            return java.util.List.of();
+        }
+
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (EconomyBackend backend : ledgerBackends) {
+            try {
+                names.add(backend.getClass().getSimpleName());
+            } catch (Throwable ignored) {
+                names.add("UnknownBackend");
+            }
+        }
+        return java.util.Collections.unmodifiableList(names);
+    }
 }
