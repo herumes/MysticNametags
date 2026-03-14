@@ -19,6 +19,7 @@ import com.hypixel.hytale.server.core.modules.entity.component.ModelComponent;
 import com.hypixel.hytale.server.core.modules.entity.component.PersistentModel;
 import com.hypixel.hytale.server.core.modules.entity.component.TransformComponent;
 import com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId;
+import com.hypixel.hytale.server.core.universe.PlayerRef;
 import com.hypixel.hytale.server.core.universe.world.World;
 import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 import com.mystichorizons.mysticnametags.config.Settings;
@@ -41,8 +42,9 @@ public final class GlyphNameplateManager {
     private static final GlyphNameplateManager INSTANCE = new GlyphNameplateManager();
 
     private static final double ANCHOR_Y_OFFSET = 2.25d;
-    private static final double POS_EPSILON = 0.0005d;
     private static final float YAW_EPSILON = 0.05f;
+
+    private static final Map<Integer, String> RESOLVED_EFFECT_IDS = new ConcurrentHashMap<>();
 
     public static GlyphNameplateManager get() {
         return INSTANCE;
@@ -52,10 +54,6 @@ public final class GlyphNameplateManager {
 
     private GlyphNameplateManager() {}
 
-    /**
-     * Apply or update a glyph nameplate for a player.
-     * MUST be called on the world thread.
-     */
     public void apply(@Nonnull UUID uuid,
                       @Nonnull World world,
                       @Nonnull Store<EntityStore> store,
@@ -78,17 +76,13 @@ public final class GlyphNameplateManager {
         boolean needsRebuild = !Objects.equals(state.lastText, clamped);
 
         if (needsRebuild) {
-            rebuild(world, store, playerRef, state, clamped, settings);
+            rebuild(uuid, world, store, playerRef, state, clamped, settings);
             state.lastText = clamped;
         }
 
-        follow(store, playerRef, state);
+        follow(uuid, world, store, playerRef, state);
     }
 
-    /**
-     * Remove glyph entities for this player.
-     * MUST be called on the world thread.
-     */
     public void remove(@Nonnull UUID uuid,
                        @Nonnull World world,
                        @Nonnull Store<EntityStore> store) {
@@ -114,25 +108,19 @@ public final class GlyphNameplateManager {
         });
     }
 
-    /**
-     * Remove cached state when player leaves.
-     * No store/world access here.
-     */
     public void forget(@Nonnull UUID uuid) {
         states.remove(uuid);
     }
 
-    /**
-     * Cheap transform-only follow update.
-     * MUST be called on the world thread.
-     */
-    public void followOnly(@Nonnull Store<EntityStore> store,
+    public void followOnly(@Nonnull World world,
+                           @Nonnull Store<EntityStore> store,
                            @Nonnull Ref<EntityStore> playerRef,
                            @Nonnull UUID uuid) {
         store.assertThread();
         RenderState state = states.get(uuid);
         if (state == null) return;
-        follow(store, playerRef, state);
+        
+        follow(uuid, world, store, playerRef, state);
     }
 
     public boolean hasState(@Nonnull UUID uuid) {
@@ -164,7 +152,8 @@ public final class GlyphNameplateManager {
     // Build & follow
     // ---------------------------------------------------------------------
 
-    private void rebuild(@Nonnull World world,
+    private void rebuild(@Nonnull UUID uuid,
+                         @Nonnull World world,
                          @Nonnull Store<EntityStore> store,
                          @Nonnull Ref<EntityStore> playerRef,
                          @Nonnull RenderState state,
@@ -174,10 +163,6 @@ public final class GlyphNameplateManager {
         despawnAll(store, world.getEntityStore(), state);
         state.glyphRefs.clear();
         state.glyphOffsets.clear();
-
-        state.lastAnchorX = Double.NaN;
-        state.lastAnchorY = Double.NaN;
-        state.lastAnchorZ = Double.NaN;
         state.lastFaceYaw = Float.NaN;
 
         TransformComponent playerTx = store.getComponent(playerRef, TransformComponent.getComponentType());
@@ -185,21 +170,27 @@ public final class GlyphNameplateManager {
 
         Vector3d playerPos = playerTx.getTransform().getPosition();
         Vector3f playerRot = playerTx.getTransform().getRotation();
-
         state.yawNativeLooksLikeDegrees = RotationCompat.looksLikeDegrees(playerRot.getY());
 
-        double yawRadTrig = RotationCompat.toTrigYawRad(playerRot.getY(), state.yawNativeLooksLikeDegrees);
-        double rightX = Math.sin(yawRadTrig);
-        double rightZ = Math.cos(yawRadTrig);
+        boolean nativeParenting = MountCompat.isSupported();
+        state.isParented = nativeParenting;
 
-        Vector3d anchor = new Vector3d(
-                playerPos.getX(),
-                playerPos.getY() + ANCHOR_Y_OFFSET,
-                playerPos.getZ()
-        );
+        Vector3d anchorPos = new Vector3d(playerPos.getX(), playerPos.getY() + ANCHOR_Y_OFFSET, playerPos.getZ());
+        Vector3f anchorRot = new Vector3f(0, playerRot.getY(), 0);
 
-        float faceYawNative = RotationCompat.addYawNative(playerRot.getY(), 180f, state.yawNativeLooksLikeDegrees);
-        Vector3f faceRot = new Vector3f(0f, faceYawNative, 0f);
+        // 1. Spawn the Parent Anchor
+        Holder anchorHolder = EntityStore.REGISTRY.newHolder();
+        anchorHolder.putComponent(TransformComponent.getComponentType(), new TransformComponent(anchorPos, anchorRot));
+        anchorHolder.putComponent(NetworkId.getComponentType(), new NetworkId(world.getEntityStore().takeNextNetworkId()));
+        anchorHolder.putComponent(UUIDComponent.getComponentType(), UUIDComponent.randomUUID());
+        anchorHolder.putComponent(Intangible.getComponentType(), Intangible.INSTANCE);
+
+        if (nativeParenting) {
+            // Anchor perfectly tracks Player. Offset is purely vertical so it never orbits.
+            MountCompat.mount(anchorHolder, playerRef, new Vector3f(0, (float)ANCHOR_Y_OFFSET, 0));
+        }
+
+        state.anchorRef = store.addEntity(anchorHolder, AddReason.SPAWN);
 
         List<ColoredChar> chars = SimpleColorParser.parse(text);
 
@@ -215,15 +206,20 @@ public final class GlyphNameplateManager {
             visibleCount++;
         }
 
-        double totalWidth = visibleCount * charWidth;
-        double start = -totalWidth / 2.0d;
+        float fallbackFaceYaw = RotationCompat.addYawNative(playerRot.getY(), 180f, state.yawNativeLooksLikeDegrees);
+        double fallbackYawRadTrig = RotationCompat.toTrigYawRad(fallbackFaceYaw, state.yawNativeLooksLikeDegrees);
+        
+        // Setup initial rotation trig 
+        double rightX = Math.cos(fallbackYawRadTrig);
+        double rightZ = -Math.sin(fallbackYawRadTrig);
 
         int logicalIndex = 0;
         for (ColoredChar cc : chars) {
             char ch = cc.ch;
             if (ch == '\n' || ch == '\r') continue;
 
-            double offset = start + ((logicalIndex + 0.5d) * charWidth);
+            // CORRECTED OFFSET MATH: Reads Left-to-Right naturally facing the viewer.
+            double offset = ((visibleCount - 1) / 2.0d - logicalIndex) * charWidth;
             logicalIndex++;
 
             if (ch == ' ') continue;
@@ -231,22 +227,27 @@ public final class GlyphNameplateManager {
             if (!GlyphInfoCompat.isSupported(ch)) continue;
 
             int rgbQuant = TintPaletteCompat.quantizeRgb(cc.color);
-            String tintEffectId = GlyphAssets.tintEffectId(rgbQuant);
 
-            Vector3d pos = new Vector3d(
-                    anchor.getX() + rightX * offset,
-                    anchor.getY(),
-                    anchor.getZ() + rightZ * offset
+            Vector3d gPos = new Vector3d(
+                    anchorPos.getX() + rightX * offset,
+                    anchorPos.getY(),
+                    anchorPos.getZ() + rightZ * offset
             );
+            
+            // Models face +Z natively. We spawn them pointing straight forward relative to the Anchor.
+            Vector3f gRot = new Vector3f(0, fallbackFaceYaw, 0);
 
+            // 2. Chained Mount: Glyphs mount directly to the Anchor.
             Ref<EntityStore> glyphRef = spawnGlyph(
                     store,
                     world.getEntityStore(),
                     ch,
-                    tintEffectId,
-                    pos,
-                    faceRot,
-                    modelScale
+                    rgbQuant,
+                    gPos,
+                    gRot,
+                    modelScale,
+                    nativeParenting ? state.anchorRef : null,
+                    nativeParenting ? new Vector3f((float) offset, 0f, 0f) : null
             );
 
             if (glyphRef != null) {
@@ -257,7 +258,9 @@ public final class GlyphNameplateManager {
         }
     }
 
-    private void follow(@Nonnull Store<EntityStore> store,
+    private void follow(@Nonnull UUID uuid,
+                        @Nonnull World world,
+                        @Nonnull Store<EntityStore> store,
                         @Nonnull Ref<EntityStore> playerRef,
                         @Nonnull RenderState state) {
 
@@ -275,47 +278,76 @@ public final class GlyphNameplateManager {
             state.yawNativeLooksLikeDegrees = looksDegrees;
         }
 
-        double yawRadTrig = RotationCompat.toTrigYawRad(playerRot.getY(), looksDegrees);
-        double rightX = Math.sin(yawRadTrig);
-        double rightZ = Math.cos(yawRadTrig);
+        PlayerRef nearestViewer = findNearestViewer(world, uuid, playerPos, store);
+        float faceYawNative = playerRot.getY();
 
-        Vector3d anchor = new Vector3d(
-                playerPos.getX(),
-                playerPos.getY() + ANCHOR_Y_OFFSET,
-                playerPos.getZ()
-        );
+        if (nearestViewer != null) {
+            TransformComponent nearTx = store.getComponent(nearestViewer.getReference(), TransformComponent.getComponentType());
+            if (nearTx != null) {
+                Vector3d nearPos = nearTx.getTransform().getPosition();
+                
+                // Calculates the exact angle from the Nameplate to the Viewer
+                double dx = nearPos.getX() - playerPos.getX();
+                double dz = nearPos.getZ() - playerPos.getZ();
+                double angleRad = Math.atan2(dx, dz);
+                
+                // NOTE: If the models are still backwards (e.g. "[" looks like "]"), 
+                // you can uncomment the + Math.PI here to flip them 180 degrees.
+                angleRad += Math.PI; 
+                
+                faceYawNative = looksDegrees ? (float) Math.toDegrees(angleRad) : (float) angleRad;
+            }
+        } else {
+            faceYawNative = RotationCompat.addYawNative(playerRot.getY(), 180f, looksDegrees);
+        }
 
-        float faceYawNative = RotationCompat.addYawNative(playerRot.getY(), 180f, looksDegrees);
-        Vector3f faceRot = new Vector3f(0f, faceYawNative, 0f);
-
-        if (nearlyEqual(state.lastAnchorX, anchor.getX())
-                && nearlyEqual(state.lastAnchorY, anchor.getY())
-                && nearlyEqual(state.lastAnchorZ, anchor.getZ())
-                && nearlyEqual(state.lastFaceYaw, faceYawNative)) {
+        if (nearlyEqual(state.lastFaceYaw, faceYawNative)) {
             return;
         }
 
-        state.lastAnchorX = anchor.getX();
-        state.lastAnchorY = anchor.getY();
-        state.lastAnchorZ = anchor.getZ();
         state.lastFaceYaw = faceYawNative;
 
-        List<Ref<EntityStore>> refs = state.glyphRefs;
-        List<Double> offsets = state.glyphOffsets;
+        // =========================================================================================
+        // ZERO-LAG SMOOTH INTERPOLATION: 
+        // We completely eradicated teleportPosition(). We strictly mutate the internal coordinates
+        // so the client beautifully interpolates any network ticks without violently snapping.
+        // Because the Glyphs are children of the Anchor, turning the Anchor spins them all together!
+        // =========================================================================================
+        
+        if (state.anchorRef != null && state.anchorRef.isValid()) {
+            TransformComponent anchorTx = store.getComponent(state.anchorRef, TransformComponent.getComponentType());
+            if (anchorTx != null) {
+                // Keep server chunk tracking perfectly aligned with the client's MountedComponent
+                anchorTx.getPosition().setX(playerPos.getX());
+                anchorTx.getPosition().setY(playerPos.getY() + ANCHOR_Y_OFFSET);
+                anchorTx.getPosition().setZ(playerPos.getZ());
+                
+                // Billboard to face the camera
+                anchorTx.setRotation(new Vector3f(0f, faceYawNative, 0f));
+                StoreComponentUpdateCompat.update(store, state.anchorRef, anchorTx);
+            }
+        }
 
-        for (int i = 0; i < refs.size(); i++) {
-            Ref<EntityStore> glyphRef = refs.get(i);
+        double yawRadTrig = RotationCompat.toTrigYawRad(faceYawNative, looksDegrees);
+        double rightX = Math.cos(yawRadTrig);
+        double rightZ = -Math.sin(yawRadTrig);
+
+        for (int i = 0; i < state.glyphRefs.size(); i++) {
+            Ref<EntityStore> glyphRef = state.glyphRefs.get(i);
             if (glyphRef == null || !glyphRef.isValid()) continue;
 
-            double along = offsets.get(i);
-
-            Vector3d pos = new Vector3d(
-                    anchor.getX() + rightX * along,
-                    anchor.getY(),
-                    anchor.getZ() + rightZ * along
-            );
-
-            StoreTransformCompat.set(store, glyphRef, new TransformComponent(pos, faceRot));
+            TransformComponent glyphTx = store.getComponent(glyphRef, TransformComponent.getComponentType());
+            if (glyphTx != null) {
+                double along = state.glyphOffsets.get(i);
+                
+                // Set perfectly matched mathematical positions to prevent any network fighting
+                glyphTx.getPosition().setX(playerPos.getX() + rightX * along);
+                glyphTx.getPosition().setY(playerPos.getY() + ANCHOR_Y_OFFSET);
+                glyphTx.getPosition().setZ(playerPos.getZ() + rightZ * along);
+                
+                glyphTx.setRotation(new Vector3f(0f, faceYawNative, 0f));
+                StoreComponentUpdateCompat.update(store, glyphRef, glyphTx);
+            }
         }
     }
 
@@ -323,16 +355,43 @@ public final class GlyphNameplateManager {
                             @Nonnull EntityStore entityStore,
                             @Nonnull RenderState state) {
 
+        if (state.anchorRef != null && state.anchorRef.isValid()) {
+            try {
+                EntityRemoveCompat.remove(store, entityStore, state.anchorRef);
+            } catch (Throwable ignored) {}
+            state.anchorRef = null;
+        }
+
         List<Ref<EntityStore>> refs = state.glyphRefs;
         for (int i = 0; i < refs.size(); i++) {
             Ref<EntityStore> ref = refs.get(i);
             if (ref == null || !ref.isValid()) continue;
-
             try {
                 EntityRemoveCompat.remove(store, entityStore, ref);
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) {}
         }
+    }
+
+    private PlayerRef findNearestViewer(World world, UUID targetUuid, Vector3d targetPos, Store<EntityStore> store) {
+        PlayerRef nearest = null;
+        double minDistSq = 400.0;
+        for (PlayerRef other : world.getPlayerRefs()) {
+            if (other == null || other.getUuid() == null || other.getUuid().equals(targetUuid)) continue;
+            Ref<EntityStore> otherRef = other.getReference();
+            if (otherRef == null || !otherRef.isValid()) continue;
+            
+            try {
+                TransformComponent otherTx = store.getComponent(otherRef, TransformComponent.getComponentType());
+                if (otherTx == null) continue;
+                
+                double distSq = otherTx.getTransform().getPosition().distanceSquaredTo(targetPos);
+                if (distSq < minDistSq) {
+                    minDistSq = distSq;
+                    nearest = other;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return nearest;
     }
 
     // ---------------------------------------------------------------------
@@ -343,38 +402,32 @@ public final class GlyphNameplateManager {
     private Ref<EntityStore> spawnGlyph(@Nonnull Store<EntityStore> store,
                                         @Nonnull EntityStore entityStore,
                                         char ch,
-                                        @Nonnull String effectAssetId,
+                                        int rgbQuant,
                                         @Nonnull Vector3d pos,
                                         @Nonnull Vector3f rot,
-                                        float scale) {
+                                        float scale,
+                                        @Nullable Ref<EntityStore> parentRef,
+                                        @Nullable Vector3f mountOffset) {
 
         try {
             Holder holder = EntityStore.REGISTRY.newHolder();
 
             String[] candidates = GlyphInfoCompat.getModelAssetIdCandidates(ch);
-            if (candidates == null || candidates.length == 0) {
-                return null;
-            }
+            if (candidates == null || candidates.length == 0) return null;
 
             ModelAsset asset = null;
             String usedModelId = null;
 
             for (String id : candidates) {
                 if (id == null || id.isEmpty()) continue;
-
                 asset = (ModelAsset) ModelAsset.getAssetMap().getAsset(id);
-                if (asset != null) {
-                    usedModelId = id;
-                    break;
-                }
+                if (asset != null) { usedModelId = id; break; }
             }
 
             if (asset == null && candidates.length > 0) {
                 String shortName = candidates[0];
                 int colon = shortName.lastIndexOf(':');
-                if (colon >= 0) {
-                    shortName = shortName.substring(colon + 1);
-                }
+                if (colon >= 0) shortName = shortName.substring(colon + 1);
                 shortName = shortName.toLowerCase(Locale.ROOT);
 
                 for (Map.Entry<String, ?> entry : ModelAsset.getAssetMap().getAssetMap().entrySet()) {
@@ -387,15 +440,9 @@ public final class GlyphNameplateManager {
                 }
             }
 
-            if (asset == null || usedModelId == null) {
-                LOGGER.at(Level.WARNING).log(
-                        "[MysticNameTags] Glyph model not found for '" + ch + "': " + Arrays.toString(candidates)
-                );
-                return null;
-            }
+            if (asset == null || usedModelId == null) return null;
 
             Model model = Model.createScaledModel(asset, scale);
-
             holder.putComponent(TransformComponent.getComponentType(), new TransformComponent(pos, rot));
             holder.putComponent(ModelComponent.getComponentType(), new ModelComponent(model));
 
@@ -411,50 +458,62 @@ public final class GlyphNameplateManager {
                         com.hypixel.hytale.server.core.modules.entity.component.EntityScaleComponent.getComponentType(),
                         new com.hypixel.hytale.server.core.modules.entity.component.EntityScaleComponent(scale)
                 );
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) {}
 
             holder.putComponent(NetworkId.getComponentType(), new NetworkId(entityStore.takeNextNetworkId()));
             holder.putComponent(UUIDComponent.getComponentType(), UUIDComponent.randomUUID());
             holder.putComponent(Intangible.getComponentType(), Intangible.INSTANCE);
 
-            try {
-                holder.ensureComponent(EntityModule.get().getVisibleComponentType());
-            } catch (Throwable ignored) {
-            }
-
-            try {
-                holder.ensureComponent(EntityStore.REGISTRY.getNonSerializedComponentType());
-            } catch (Throwable ignored) {
-            }
+            try { holder.ensureComponent(EntityModule.get().getVisibleComponentType()); } catch (Throwable ignored) {}
+            try { holder.ensureComponent(EntityStore.REGISTRY.getNonSerializedComponentType()); } catch (Throwable ignored) {}
 
             holder.putComponent(EffectControllerComponent.getComponentType(), new EffectControllerComponent());
+
+            // --- NATIVE ECS MOUNT LINKAGE ---
+            if (parentRef != null && mountOffset != null) {
+                MountCompat.mount(holder, parentRef, mountOffset);
+            }
 
             Ref<EntityStore> spawned = store.addEntity(holder, AddReason.SPAWN);
 
             try {
-                EffectControllerComponent spawnedEffects =
-                        store.getComponent(spawned, EffectControllerComponent.getComponentType());
+                EffectControllerComponent spawnedEffects = store.getComponent(spawned, EffectControllerComponent.getComponentType());
+                EntityEffect tint = null;
+                String finalEffectId = RESOLVED_EFFECT_IDS.get(rgbQuant);
 
-                EntityEffect tint = (EntityEffect) EntityEffect.getAssetMap().getAsset(effectAssetId);
-                if (tint != null && spawnedEffects != null) {
-                    spawnedEffects.addEffect(
-                            spawned,
-                            tint,
-                            (float) Integer.MAX_VALUE,
-                            OverlapBehavior.OVERWRITE,
-                            store
-                    );
+                if (finalEffectId != null) {
+                    tint = (EntityEffect) EntityEffect.getAssetMap().getAsset(finalEffectId);
+                } else {
+                    String attemptId = GlyphAssets.tintEffectId(rgbQuant);
+                    tint = (EntityEffect) EntityEffect.getAssetMap().getAsset(attemptId);
+                    if (tint == null) {
+                        attemptId = attemptId.toLowerCase(Locale.ROOT);
+                        tint = (EntityEffect) EntityEffect.getAssetMap().getAsset(attemptId);
+                    }
+                    if (tint == null) {
+                        String shortName = "httint_" + String.format("%06x", rgbQuant);
+                        for (Map.Entry<String, ?> entry : EntityEffect.getAssetMap().getAssetMap().entrySet()) {
+                            String key = entry.getKey();
+                            if (key != null && key.toLowerCase(Locale.ROOT).contains(shortName)) {
+                                attemptId = key;
+                                tint = (EntityEffect) entry.getValue();
+                                break;
+                            }
+                        }
+                    }
+                    if (tint != null) {
+                        RESOLVED_EFFECT_IDS.put(rgbQuant, attemptId);
+                        finalEffectId = attemptId;
+                    }
                 }
-            } catch (Throwable t) {
-                LOGGER.at(Level.FINE).withCause(t)
-                        .log("[MysticNameTags] Failed to apply tint effect to glyph " + usedModelId);
-            }
+
+                if (tint != null && spawnedEffects != null) {
+                    spawnedEffects.addEffect(spawned, tint, (float) Integer.MAX_VALUE, OverlapBehavior.OVERWRITE, store);
+                }
+            } catch (Throwable ignored) {}
 
             return spawned;
         } catch (Throwable t) {
-            LOGGER.at(Level.WARNING).withCause(t)
-                    .log("[MysticNameTags] spawnGlyph failed for character " + ch);
             return null;
         }
     }
@@ -465,50 +524,32 @@ public final class GlyphNameplateManager {
 
     private static String clampVisibleLength(String text, int maxVisible) {
         if (text == null || text.isEmpty()) return "";
-
         text = ColorFormatter.miniToLegacy(text);
-
         StringBuilder out = new StringBuilder(text.length());
         int visible = 0;
 
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
 
-            // &#RRGGBB / §#RRGGBB
-            if ((c == '&' || c == '§')
-                    && i + 7 < text.length()
-                    && text.charAt(i + 1) == '#') {
-                out.append(text, i, i + 8);
-                i += 7;
-                continue;
+            if ((c == '&' || c == '§') && i + 7 < text.length() && text.charAt(i + 1) == '#') {
+                out.append(text, i, i + 8); i += 7; continue;
             }
 
-            // &x&F&F&0&0&0&0 / §x§F§F§0§0§0§0
-            if ((c == '&' || c == '§')
-                    && i + 13 < text.length()
-                    && (text.charAt(i + 1) == 'x' || text.charAt(i + 1) == 'X')) {
-                out.append(text, i, i + 14);
-                i += 13;
-                continue;
+            if ((c == '&' || c == '§') && i + 13 < text.length() && (text.charAt(i + 1) == 'x' || text.charAt(i + 1) == 'X')) {
+                out.append(text, i, i + 14); i += 13; continue;
             }
 
-            // legacy codes
             if ((c == '&' || c == '§') && i + 1 < text.length()) {
                 char code = text.charAt(i + 1);
                 if ("0123456789abcdefABCDEFklmnorKLMNORxX".indexOf(code) >= 0) {
-                    out.append(c).append(code);
-                    i += 1;
-                    continue;
+                    out.append(c).append(code); i += 1; continue;
                 }
             }
 
-            // angle tags
             if (c == '<') {
                 int end = text.indexOf('>', i);
                 if (end > i) {
-                    out.append(text, i, end + 1);
-                    i = end;
-                    continue;
+                    out.append(text, i, end + 1); i = end; continue;
                 }
             }
 
@@ -518,30 +559,20 @@ public final class GlyphNameplateManager {
                 if (visible >= maxVisible) break;
             }
         }
-
         return out.toString();
     }
 
-    private static boolean nearlyEqual(double a, double b) {
-        return Math.abs(a - b) < POS_EPSILON;
-    }
-
-    private static boolean nearlyEqual(float a, float b) {
-        return Math.abs(a - b) < YAW_EPSILON;
-    }
+    private static boolean nearlyEqual(float a, float b) { return Math.abs(a - b) < YAW_EPSILON; }
 
     private static final class RenderState {
         String lastText = null;
         double scale = 1.0d;
-
         String worldName = null;
         Boolean yawNativeLooksLikeDegrees = null;
-
-        double lastAnchorX = Double.NaN;
-        double lastAnchorY = Double.NaN;
-        double lastAnchorZ = Double.NaN;
+        boolean isParented = false;
+        Ref<EntityStore> anchorRef = null;
+        double lastAnchorX = Double.NaN, lastAnchorY = Double.NaN, lastAnchorZ = Double.NaN;
         float lastFaceYaw = Float.NaN;
-
         final List<Ref<EntityStore>> glyphRefs = new ArrayList<>();
         final List<Double> glyphOffsets = new ArrayList<>();
     }
@@ -549,11 +580,7 @@ public final class GlyphNameplateManager {
     private static final class ColoredChar {
         final char ch;
         final Color color;
-
-        ColoredChar(char ch, Color color) {
-            this.ch = ch;
-            this.color = color;
-        }
+        ColoredChar(char ch, Color color) { this.ch = ch; this.color = color; }
     }
 
     private static final class SimpleColorParser {
@@ -562,20 +589,20 @@ public final class GlyphNameplateManager {
 
         static {
             LEGACY_COLORS.put('0', Color.BLACK);
-            LEGACY_COLORS.put('1', new Color(0x0000AA));
-            LEGACY_COLORS.put('2', new Color(0x00AA00));
-            LEGACY_COLORS.put('3', new Color(0x00AAAA));
-            LEGACY_COLORS.put('4', new Color(0xAA0000));
-            LEGACY_COLORS.put('5', new Color(0xAA00AA));
-            LEGACY_COLORS.put('6', new Color(0xFFAA00));
-            LEGACY_COLORS.put('7', new Color(0xAAAAAA));
-            LEGACY_COLORS.put('8', new Color(0x555555));
-            LEGACY_COLORS.put('9', new Color(0x5555FF));
-            LEGACY_COLORS.put('a', new Color(0x55FF55));
-            LEGACY_COLORS.put('b', new Color(0x55FFFF));
-            LEGACY_COLORS.put('c', new Color(0xFF5555));
-            LEGACY_COLORS.put('d', new Color(0xFF55FF));
-            LEGACY_COLORS.put('e', new Color(0xFFFF55));
+            LEGACY_COLORS.put('1', new Color(0x00, 0x00, 0xA0));
+            LEGACY_COLORS.put('2', new Color(0x00, 0xA0, 0x00));
+            LEGACY_COLORS.put('3', new Color(0x00, 0xA0, 0xA0));
+            LEGACY_COLORS.put('4', new Color(0xA0, 0x00, 0x00));
+            LEGACY_COLORS.put('5', new Color(0xA0, 0x00, 0xA0));
+            LEGACY_COLORS.put('6', new Color(0xFF, 0xA0, 0x00));
+            LEGACY_COLORS.put('7', new Color(0xA0, 0xA0, 0xA0));
+            LEGACY_COLORS.put('8', new Color(0x60, 0x60, 0x60));
+            LEGACY_COLORS.put('9', new Color(0x60, 0x60, 0xFF));
+            LEGACY_COLORS.put('a', new Color(0x60, 0xFF, 0x60));
+            LEGACY_COLORS.put('b', new Color(0x60, 0xFF, 0xFF));
+            LEGACY_COLORS.put('c', new Color(0xFF, 0x60, 0x60));
+            LEGACY_COLORS.put('d', new Color(0xFF, 0x60, 0xFF));
+            LEGACY_COLORS.put('e', new Color(0xFF, 0xFF, 0x60));
             LEGACY_COLORS.put('f', Color.WHITE);
         }
 
@@ -584,47 +611,28 @@ public final class GlyphNameplateManager {
             if (text == null || text.isEmpty()) return out;
 
             text = ColorFormatter.miniToLegacy(text);
-
             Color current = Color.WHITE;
 
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
 
-                // &#RRGGBB / §#RRGGBB
-                if ((c == '&' || c == '§')
-                        && i + 7 < text.length()
-                        && text.charAt(i + 1) == '#') {
+                if ((c == '&' || c == '§') && i + 7 < text.length() && text.charAt(i + 1) == '#') {
                     Color parsed = GlyphAssets.tryParseHex6(text.substring(i + 2, i + 8));
                     if (parsed != null) current = parsed;
                     i += 7;
                     continue;
                 }
 
-                // &x&F&F&0&0&0&0 / §x§F§F§0§0§0§0
-                if ((c == '&' || c == '§')
-                        && i + 13 < text.length()
-                        && (text.charAt(i + 1) == 'x' || text.charAt(i + 1) == 'X')) {
-
+                if ((c == '&' || c == '§') && i + 13 < text.length() && (text.charAt(i + 1) == 'x' || text.charAt(i + 1) == 'X')) {
                     StringBuilder hex = new StringBuilder(6);
                     boolean valid = true;
-
                     for (int j = i + 2; j <= i + 12; j += 2) {
-                        if (j + 1 >= text.length()) {
-                            valid = false;
-                            break;
-                        }
-
+                        if (j + 1 >= text.length()) { valid = false; break; }
                         char marker = text.charAt(j);
                         char digit = text.charAt(j + 1);
-
-                        if ((marker != '&' && marker != '§') || !isHexDigit(digit)) {
-                            valid = false;
-                            break;
-                        }
-
+                        if ((marker != '&' && marker != '§') || !isHexDigit(digit)) { valid = false; break; }
                         hex.append(digit);
                     }
-
                     if (valid) {
                         Color parsed = GlyphAssets.tryParseHex6(hex.toString());
                         if (parsed != null) current = parsed;
@@ -633,314 +641,172 @@ public final class GlyphNameplateManager {
                     }
                 }
 
-                // legacy single-char color/style
                 if ((c == '&' || c == '§') && i + 1 < text.length()) {
                     char code = Character.toLowerCase(text.charAt(i + 1));
-
-                    if (LEGACY_COLORS.containsKey(code)) {
-                        current = LEGACY_COLORS.get(code);
-                        i += 1;
-                        continue;
-                    }
-
-                    if (code == 'r') {
-                        current = Color.WHITE;
-                        i += 1;
-                        continue;
-                    }
-
-                    if ("klmno".indexOf(code) >= 0) {
-                        i += 1;
-                        continue;
-                    }
+                    if (LEGACY_COLORS.containsKey(code)) { current = LEGACY_COLORS.get(code); i += 1; continue; }
+                    if (code == 'r') { current = Color.WHITE; i += 1; continue; }
+                    if ("klmno".indexOf(code) >= 0) { i += 1; continue; }
                 }
 
-                // <#RRGGBB>, </>, <reset>
                 if (c == '<') {
                     int end = text.indexOf('>', i);
                     if (end > i) {
                         String tag = text.substring(i + 1, end).trim().toLowerCase(Locale.ROOT);
-
                         if (tag.startsWith("#") && tag.length() == 7) {
                             Color parsed = GlyphAssets.tryParseHex6(tag.substring(1));
                             if (parsed != null) current = parsed;
-                            i = end;
-                            continue;
+                            i = end; continue;
                         }
-
                         if (tag.equals("/") || tag.equals("reset")) {
                             current = Color.WHITE;
-                            i = end;
-                            continue;
+                            i = end; continue;
                         }
                     }
                 }
 
                 out.add(new ColoredChar(c, current));
             }
-
             return out;
         }
 
         private static boolean isHexDigit(char c) {
-            return (c >= '0' && c <= '9')
-                    || (c >= 'a' && c <= 'f')
-                    || (c >= 'A' && c <= 'F');
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
         }
     }
 
     // ---------------------------------------------------------------------
-    // Compat helpers
+    // Native Engine ECS Injection - Mount System 
     // ---------------------------------------------------------------------
 
+    private static final class MountCompat {
+        private static Class<?> mountedClass;
+        private static Constructor<?> mountedConstructor;
+        private static Object defaultController;
+        private static Method getComponentTypeMethod;
+        private static Method putComponentMethod;
+
+        static {
+            try {
+                mountedClass = Class.forName("com.hypixel.hytale.builtin.mounts.MountedComponent");
+                Class<?> controllerClass = Class.forName("com.hypixel.hytale.protocol.MountController");
+                
+                for (Object c : controllerClass.getEnumConstants()) {
+                    String name = c.toString().toUpperCase();
+                    if (name.equals("NONE")) {
+                        defaultController = c;
+                        break;
+                    }
+                }
+                if (defaultController == null) defaultController = controllerClass.getEnumConstants()[0];
+
+                mountedConstructor = mountedClass.getConstructor(Ref.class, Vector3f.class, controllerClass);
+                getComponentTypeMethod = mountedClass.getMethod("getComponentType");
+                
+                for (Method m : Holder.class.getMethods()) {
+                    if (m.getName().equals("putComponent") && m.getParameterCount() == 2) {
+                        putComponentMethod = m;
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        static boolean isSupported() {
+            return mountedClass != null && mountedConstructor != null && putComponentMethod != null;
+        }
+
+        static boolean mount(Holder holder, Ref<EntityStore> target, Vector3f offset) {
+            if (!isSupported()) return false;
+            try {
+                Object comp = mountedConstructor.newInstance(target, offset, defaultController);
+                Object compType = getComponentTypeMethod.invoke(null);
+                putComponentMethod.invoke(holder, compType, comp);
+                return true;
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+    }
+
     private static final class EntityRemoveCompat {
-
         @SuppressWarnings({"unchecked", "rawtypes"})
-        static void remove(@Nonnull Store<EntityStore> store,
-                           @Nonnull EntityStore entityStore,
-                           @Nonnull Ref<EntityStore> ref) {
-
+        static void remove(@Nonnull Store<EntityStore> store, @Nonnull EntityStore entityStore, @Nonnull Ref<EntityStore> ref) {
             try {
                 Class<?> rr = Class.forName("com.hypixel.hytale.component.RemoveReason");
                 Object remove = Enum.valueOf((Class<? extends Enum>) rr.asSubclass(Enum.class), "REMOVE");
 
                 if (tryInvoke(store, "removeEntity", new Class[]{Ref.class, rr}, ref, remove)) return;
                 if (tryInvoke(entityStore, "removeEntity", new Class[]{Ref.class, rr}, ref, remove)) return;
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) {}
 
             if (tryInvoke(store, "removeEntity", new Class[]{Ref.class, Object.class}, ref, null)) return;
             if (tryInvoke(store, "removeEntity", new Class[]{Ref.class}, ref)) return;
             if (tryInvoke(store, "deleteEntity", new Class[]{Ref.class}, ref)) return;
-
             if (tryInvoke(entityStore, "removeEntity", new Class[]{Ref.class, Object.class}, ref, null)) return;
             if (tryInvoke(entityStore, "removeEntity", new Class[]{Ref.class}, ref)) return;
         }
-
         private static boolean tryInvoke(Object target, String name, Class<?>[] sig, Object... args) {
-            try {
-                Method m = target.getClass().getMethod(name, sig);
-                m.invoke(target, args);
-                return true;
-            } catch (Throwable ignored) {
-                return false;
-            }
+            try { Method m = target.getClass().getMethod(name, sig); m.invoke(target, args); return true; } catch (Throwable ignored) { return false; }
         }
     }
 
-    private static final class TransformComponentCompat {
+    private static final class StoreComponentUpdateCompat {
         private static volatile boolean cached = false;
+        private static Method mUpdateComponent3;
+        private static Method mSetComponent3;
+        private static Method mPutComponent3;
 
-        private static Method mSetPosition;
-        private static Method mSetRotation;
-        private static Method mSetTransformPR;
-        private static Method mSetTransformObj;
-        private static Method mGetTransform;
-        private static Method mMarkChunkDirty;
-
-        private static Constructor<?> cTransform;
-
-        static void apply(@Nonnull Store<EntityStore> store,
-                          @Nonnull TransformComponent tx,
-                          @Nonnull Vector3d pos,
-                          @Nonnull Vector3f rot) {
-
-            tryInit(tx);
-
-            if (mSetTransformPR != null) {
-                try {
-                    mSetTransformPR.invoke(tx, pos, rot);
-                    markDirty(store, tx);
-                    return;
-                } catch (Throwable ignored) {
-                }
-            }
-
-            boolean didPos = false;
-            if (mSetPosition != null) {
-                try {
-                    mSetPosition.invoke(tx, pos);
-                    didPos = true;
-                } catch (Throwable ignored) {
-                }
-            }
-
-            boolean didRot = false;
-            if (mSetRotation != null) {
-                try {
-                    mSetRotation.invoke(tx, rot);
-                    didRot = true;
-                } catch (Throwable ignored) {
-                }
-            }
-
-            if (didPos || didRot) {
-                markDirty(store, tx);
-                return;
-            }
-
-            if (mSetTransformObj != null) {
-                Object transformObj = null;
-
-                if (cTransform != null) {
-                    try {
-                        transformObj = cTransform.newInstance(pos, rot);
-                    } catch (Throwable ignored) {
-                    }
-                }
-
-                if (transformObj == null && mGetTransform != null) {
-                    try {
-                        transformObj = mGetTransform.invoke(tx);
-                    } catch (Throwable ignored) {
-                    }
-                }
-
-                if (transformObj != null) {
-                    try {
-                        mSetTransformObj.invoke(tx, transformObj);
-                        markDirty(store, tx);
-                    } catch (Throwable ignored) {
-                    }
-                }
-            }
-        }
-
-        private static void markDirty(Store<EntityStore> store, TransformComponent tx) {
-            if (mMarkChunkDirty != null) {
-                try {
-                    mMarkChunkDirty.invoke(tx, store);
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-
-        private static void tryInit(@Nonnull TransformComponent tx) {
-            if (cached) return;
-
-            synchronized (TransformComponentCompat.class) {
-                if (cached) return;
-
-                Class<?> cls = tx.getClass();
-
-                mSetTransformPR = findMethodExact(cls, "setTransform", Vector3d.class, Vector3f.class);
-                mSetPosition = findMethodExact(cls, "setPosition", Vector3d.class);
-                mSetRotation = findMethodExact(cls, "setRotation", Vector3f.class);
-                mGetTransform = findMethodExact(cls, "getTransform");
-                mMarkChunkDirty = findMethodExact(cls, "markChunkDirty", Store.class);
-
-                for (Method m : cls.getMethods()) {
-                    if (!m.getName().equals("setTransform")) continue;
-                    if (m.getParameterCount() == 1) {
-                        mSetTransformObj = m;
-                        break;
-                    }
-                }
-
-                if (mSetTransformObj != null) {
-                    Class<?> transformType = mSetTransformObj.getParameterTypes()[0];
-                    try {
-                        cTransform = transformType.getConstructor(Vector3d.class, Vector3f.class);
-                    } catch (Throwable ignored) {
-                        cTransform = null;
-                    }
-                }
-
-                cached = true;
-            }
-        }
-
-        private static Method findMethodExact(Class<?> cls, String name, Class<?>... params) {
+        static void update(Store<EntityStore> store, Ref<EntityStore> ref, TransformComponent tx) {
+            tryInit(store);
             try {
-                return cls.getMethod(name, params);
-            } catch (NoSuchMethodException ignored) {
-                return null;
+                Object type = TransformComponent.getComponentType();
+                if (mUpdateComponent3 != null) mUpdateComponent3.invoke(store, ref, type, tx);
+                else if (mSetComponent3 != null) mSetComponent3.invoke(store, ref, type, tx);
+                else if (mPutComponent3 != null) mPutComponent3.invoke(store, ref, type, tx);
+            } catch (Throwable ignored) {}
+        }
+        private static void tryInit(Store<EntityStore> store) {
+            if (cached) return;
+            synchronized (StoreComponentUpdateCompat.class) {
+                if (cached) return;
+                for (Method m : store.getClass().getMethods()) {
+                    if (m.getParameterCount() == 3) {
+                        if (m.getName().equals("updateComponent")) mUpdateComponent3 = m;
+                        else if (m.getName().equals("setComponent")) mSetComponent3 = m;
+                        else if (m.getName().equals("putComponent")) mPutComponent3 = m;
+                    }
+                }
+                cached = true;
             }
         }
     }
 
     private static final class RotationCompat {
-
-        static boolean looksLikeDegrees(float yaw) {
-            return Math.abs(yaw) > 6.4f;
-        }
-
-        static double toTrigYawRad(float yawNative, boolean looksDegrees) {
-            return looksDegrees ? Math.toRadians(yawNative) : yawNative;
-        }
-
-        static float addYawNative(float yawNative, float addDegrees, boolean looksDegrees) {
-            if (looksDegrees) return yawNative + addDegrees;
-            return (float) (yawNative + Math.toRadians(addDegrees));
-        }
-    }
-
-    private static final class StoreTransformCompat {
-        private static volatile boolean cached = false;
-        private static Method mPutComponent3;
-        private static Method mSetComponent3;
-        private static Method mUpdateComponent3;
-
-        static void set(Store<EntityStore> store, Ref<EntityStore> ref, TransformComponent tx) {
-            tryInit(store);
-            Object type = TransformComponent.getComponentType();
-
-            if (mPutComponent3 != null && tryInvoke(mPutComponent3, store, ref, type, tx)) return;
-            if (mSetComponent3 != null && tryInvoke(mSetComponent3, store, ref, type, tx)) return;
-            if (mUpdateComponent3 != null && tryInvoke(mUpdateComponent3, store, ref, type, tx)) return;
-
-            TransformComponent existing = store.getComponent(ref, TransformComponent.getComponentType());
-            if (existing != null) {
-                TransformComponentCompat.apply(
-                        store,
-                        existing,
-                        tx.getTransform().getPosition(),
-                        tx.getTransform().getRotation()
-                );
-            }
-        }
-
-        private static boolean tryInvoke(Method m, Object target, Object... args) {
-            try {
-                m.invoke(target, args);
-                return true;
-            } catch (Throwable ignored) {
-                return false;
-            }
-        }
-
-        private static void tryInit(Store<EntityStore> store) {
-            if (cached) return;
-
-            synchronized (StoreTransformCompat.class) {
-                if (cached) return;
-
-                Class<?> cls = store.getClass();
-                mPutComponent3 = findMethodByNameAndParamCount(cls, "putComponent", 3);
-                mSetComponent3 = findMethodByNameAndParamCount(cls, "setComponent", 3);
-                mUpdateComponent3 = findMethodByNameAndParamCount(cls, "updateComponent", 3);
-                cached = true;
-            }
-        }
-
-        private static Method findMethodByNameAndParamCount(Class<?> cls, String name, int count) {
-            for (Method m : cls.getMethods()) {
-                if (m.getName().equals(name) && m.getParameterCount() == count) {
-                    return m;
-                }
-            }
-            return null;
-        }
+        static boolean looksLikeDegrees(float yaw) { return Math.abs(yaw) > 6.4f; }
+        static double toTrigYawRad(float yawNative, boolean looksDegrees) { return looksDegrees ? Math.toRadians(yawNative) : yawNative; }
+        static float addYawNative(float yawNative, float addDegrees, boolean looksDegrees) { return (float) (looksDegrees ? yawNative + addDegrees : yawNative + Math.toRadians(addDegrees)); }
     }
 
     private static final class TintPaletteCompat {
+
+        private static final int[] ALLOWED_VALUES = {
+            0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0, 0xFF
+        };
 
         private static final int[] LUT = new int[256];
 
         static {
             for (int i = 0; i < 256; i++) {
-                int step = (i * 8 + 127) / 255;
-                LUT[i] = (step * 255 + 4) / 8;
+                int closest = 0;
+                int minDiff = Integer.MAX_VALUE;
+                for (int val : ALLOWED_VALUES) {
+                    int diff = Math.abs(i - val);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closest = val;
+                    }
+                }
+                LUT[i] = closest;
             }
         }
 
