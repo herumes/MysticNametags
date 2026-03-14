@@ -60,7 +60,8 @@ public final class GlyphNameplateFollowTask implements Runnable {
                         if (entityRef == null || !entityRef.isValid()) continue;
 
                         try {
-                            GlyphNameplateManager.get().followOnly(store, entityRef, uuid);
+                            // Passed world context to allow the manager to find the nearest viewing player
+                            GlyphNameplateManager.get().followOnly(world, store, entityRef, uuid);
                         } catch (Throwable t) {
                             LOGGER.at(Level.FINE).withCause(t)
                                     .log("[MysticNameTags] Glyph follow failed for player=" + uuid);
