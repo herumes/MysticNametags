@@ -1052,17 +1052,50 @@ public class TagManager {
     }
 
     public String getColoredActiveTag(@Nonnull UUID uuid) {
+        return getLegacyActiveTag(uuid);
+    }
+
+    public String getLegacyActiveTag(@Nonnull UUID uuid) {
         TagDefinition def = resolveActiveOrDefaultTag(uuid);
         if (def == null) {
             return "";
         }
 
         String display = def.getDisplay();
-        if (display == null) {
+        if (display == null || display.isEmpty()) {
             return "";
         }
 
+        // Keep &#RRGGBB intact because this chat system supports that format
         return ColorFormatter.translateAlternateColorCodes('§', display);
+    }
+
+    public String getMiniMessageActiveTag(@Nonnull UUID uuid) {
+        TagDefinition def = resolveActiveOrDefaultTag(uuid);
+        if (def == null) {
+            return "";
+        }
+
+        String display = def.getDisplay();
+        if (display == null || display.isEmpty()) {
+            return "";
+        }
+
+        return ColorFormatter.toMiniMessage(display);
+    }
+
+    public String getNameplateActiveTag(@Nonnull UUID uuid) {
+        TagDefinition def = resolveActiveOrDefaultTag(uuid);
+        if (def == null) {
+            return "";
+        }
+
+        String display = def.getDisplay();
+        if (display == null || display.isEmpty()) {
+            return "";
+        }
+
+        return ColorFormatter.colorizeForNameplate(display);
     }
 
     public String getPlainActiveTag(@Nonnull UUID uuid) {

@@ -257,18 +257,127 @@ public final class ColorFormatter {
         return buffer.toString().replace('&', '§');
     }
 
-    public static String translateAlternateColorCodes(char altColorChar, String textToTranslate) {
-        if (textToTranslate == null) {
-            return null;
+    public static String toMiniMessage(String input) {
+        if (input == null || input.isEmpty()) {
+            return input;
         }
-        char[] b = textToTranslate.toCharArray();
+
+        String out = input;
+
+        // normalize § -> &
+        out = translateAlternateColorCodes('§', out);
+
+        // if already contains MiniMessage, we still continue carefully
+        // because users may mix formats
+
+        // convert expanded legacy hex &x&F&F&0&0&0&0 -> <#FF0000>
+        Matcher expanded = EXPANDED_HEX_AMP.matcher(out);
+        StringBuffer expandedBuf = new StringBuffer();
+        while (expanded.find()) {
+            String unpacked = unpackExpandedHex(expanded.group(), '&');
+            String replacement = (unpacked != null)
+                    ? "<#" + unpacked.toUpperCase(Locale.ROOT) + ">"
+                    : expanded.group();
+            expanded.appendReplacement(expandedBuf, Matcher.quoteReplacement(replacement));
+        }
+        expanded.appendTail(expandedBuf);
+        out = expandedBuf.toString();
+
+        // convert &#RRGGBB -> <#RRGGBB>
+        out = out.replaceAll("&#([0-9a-fA-F]{6})", "<#$1>");
+
+        // convert bare #RRGGBB -> <#RRGGBB>
+        out = out.replaceAll("(?<!<)#([0-9a-fA-F]{6})", "<#$1>");
+
+        // formatting
+        out = out.replace("&l", "<bold>");
+        out = out.replace("&L", "<bold>");
+        out = out.replace("&o", "<italic>");
+        out = out.replace("&O", "<italic>");
+        out = out.replace("&r", "<reset>");
+        out = out.replace("&R", "<reset>");
+
+        // colors
+        out = out.replace("&0", "<black>");
+        out = out.replace("&1", "<dark_blue>");
+        out = out.replace("&2", "<dark_green>");
+        out = out.replace("&3", "<dark_aqua>");
+        out = out.replace("&4", "<dark_red>");
+        out = out.replace("&5", "<dark_purple>");
+        out = out.replace("&6", "<gold>");
+        out = out.replace("&7", "<gray>");
+        out = out.replace("&8", "<dark_gray>");
+        out = out.replace("&9", "<blue>");
+        out = out.replace("&a", "<green>");
+        out = out.replace("&A", "<green>");
+        out = out.replace("&b", "<aqua>");
+        out = out.replace("&B", "<aqua>");
+        out = out.replace("&c", "<red>");
+        out = out.replace("&C", "<red>");
+        out = out.replace("&d", "<light_purple>");
+        out = out.replace("&D", "<light_purple>");
+        out = out.replace("&e", "<yellow>");
+        out = out.replace("&E", "<yellow>");
+        out = out.replace("&f", "<white>");
+        out = out.replace("&F", "<white>");
+
+        return out;
+    }
+
+    public static String translateAlternateColorCodes(char altColorChar, String textToTranslate) {
+        if (textToTranslate == null || textToTranslate.isEmpty()) {
+            return textToTranslate;
+        }
+
+        String text = textToTranslate;
+
+        // 1) Convert bare #RRGGBB into &#RRGGBB
+        // Only when the # is not already part of &#RRGGBB
+        text = text.replaceAll("(?i)(?<![&§])#([0-9a-f]{6})", "&#$1");
+
+        char[] b = text.toCharArray();
+
         for (int i = 0; i < b.length - 1; i++) {
-            if (b[i] == altColorChar && isColorCodeChar(b[i + 1])) {
+            if (b[i] != altColorChar) {
+                continue;
+            }
+
+            char next = b[i + 1];
+
+            // Legacy/style codes: §a, §l, etc.
+            if (isColorCodeChar(next)) {
                 b[i] = COLOR_CHAR;
-                b[i + 1] = Character.toLowerCase(b[i + 1]);
+                b[i + 1] = Character.toLowerCase(next);
+                continue;
+            }
+
+            // Hex sequence: §#RRGGBB -> &#RRGGBB
+            if (next == '#' && i + 7 < b.length) {
+                boolean valid = true;
+                for (int j = i + 2; j <= i + 7; j++) {
+                    if (!isHexChar(b[j])) {
+                        valid = false;
+                        break;
+                    }
+                }
+
+                if (valid) {
+                    b[i] = COLOR_CHAR; // normalize marker to &
+                    for (int j = i + 2; j <= i + 7; j++) {
+                        b[j] = Character.toLowerCase(b[j]);
+                    }
+                    i += 7;
+                }
             }
         }
+
         return new String(b);
+    }
+
+    private static boolean isHexChar(char c) {
+        return (c >= '0' && c <= '9')
+                || (c >= 'a' && c <= 'f')
+                || (c >= 'A' && c <= 'F');
     }
 
     private static boolean isColorCodeChar(char c) {

@@ -1,6 +1,7 @@
 package com.mystichorizons.mysticnametags.placeholders;
 
 import com.mystichorizons.mysticnametags.tags.TagManager;
+import com.mystichorizons.mysticnametags.util.ColorFormatter;
 import com.wiflow.placeholderapi.context.PlaceholderContext;
 import com.wiflow.placeholderapi.expansion.PlaceholderExpansion;
 
@@ -84,23 +85,24 @@ public class MysticTagsWiFlowExpansion extends PlaceholderExpansion {
         try {
             switch (key) {
                 case "tag":
-                    // Colored tag only (e.g. "&#8A2BE2&l[Mystic]" formatted)
-                    return manager.getColoredActiveTag(uuid);
+                    return manager.getLegacyActiveTag(uuid);
+
+                case "tag_mini":
+                    return manager.getMiniMessageActiveTag(uuid);
 
                 case "tag_plain":
-                    // Tag without any color codes
                     return manager.getPlainActiveTag(uuid);
 
                 case "full":
-                    // [Rank] Name [Tag] with colors, for chat / UI, NOT for Nameplate
-                    return manager.getColoredFullNameplate(uuid, playerName);
+                    return ColorFormatter.colorize(manager.getColoredFullNameplate(uuid, playerName));
+
+                case "full_mini":
+                    return ColorFormatter.toMiniMessage(manager.getColoredFullNameplate(uuid, playerName));
 
                 case "full_plain":
-                    // [Rank] Name [Tag] with all formatting stripped
                     return manager.getPlainFullNameplate(uuid, playerName);
 
                 default:
-                    // Unknown placeholder for this identifier – let parser keep original
                     return null;
             }
         } catch (Exception e) {

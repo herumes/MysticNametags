@@ -4,6 +4,7 @@ import at.helpch.placeholderapi.expansion.PlaceholderExpansion;
 import com.hypixel.hytale.server.core.universe.PlayerRef;
 import com.mystichorizons.mysticnametags.MysticNameTagsPlugin;
 import com.mystichorizons.mysticnametags.tags.TagManager;
+import com.mystichorizons.mysticnametags.util.ColorFormatter;
 
 import java.util.Locale;
 import java.util.UUID;
@@ -84,23 +85,24 @@ public final class MysticTagsHelpchExpansion extends PlaceholderExpansion {
         try {
             switch (key) {
                 case "tag":
-                    // Colored tag only (e.g. "&#8A2BE2&l[Mystic]")
-                    return manager.getColoredActiveTag(uuid);
+                    return manager.getLegacyActiveTag(uuid);
+
+                case "tag_mini":
+                    return manager.getMiniMessageActiveTag(uuid);
 
                 case "tag_plain":
-                    // Tag without any color codes
                     return manager.getPlainActiveTag(uuid);
 
                 case "full":
-                    // [Rank] Name [Tag] with colors (for chat / UI)
-                    return manager.getColoredFullNameplate(uuid, playerName);
+                    return ColorFormatter.colorize(manager.getColoredFullNameplate(uuid, playerName));
+
+                case "full_mini":
+                    return ColorFormatter.toMiniMessage(manager.getColoredFullNameplate(uuid, playerName));
 
                 case "full_plain":
-                    // [Rank] Name [Tag] without any formatting
                     return manager.getPlainFullNameplate(uuid, playerName);
 
                 default:
-                    // Unknown parameter -> let PlaceholderAPI keep original text
                     return null;
             }
         } catch (Exception e) {
