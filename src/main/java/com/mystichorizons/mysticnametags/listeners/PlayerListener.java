@@ -1,8 +1,10 @@
 package com.mystichorizons.mysticnametags.listeners;
 
+import com.hypixel.hytale.component.Holder;
 import com.hypixel.hytale.component.Ref;
 import com.hypixel.hytale.event.EventRegistry;
 import com.hypixel.hytale.logger.HytaleLogger;
+import com.hypixel.hytale.server.core.event.events.player.AddPlayerToWorldEvent;
 import com.hypixel.hytale.server.core.event.events.player.PlayerConnectEvent;
 import com.hypixel.hytale.server.core.event.events.player.PlayerDisconnectEvent;
 import com.hypixel.hytale.server.core.event.events.player.PlayerReadyEvent;
@@ -47,6 +49,14 @@ public class PlayerListener {
         } catch (Exception e) {
             LOGGER.at(Level.WARNING).withCause(e)
                     .log("[MysticNameTags] Failed to register PlayerReadyEvent");
+        }
+
+        try {
+            eventBus.registerGlobal(AddPlayerToWorldEvent.class, this::onAddPlayerToWorld);
+            LOGGER.at(Level.INFO).log("[MysticNameTags] Registered AddPlayerToWorldEvent listener");
+        } catch (Exception e) {
+            LOGGER.at(Level.WARNING).withCause(e)
+                    .log("[MysticNameTags] Failed to register AddPlayerToWorldEvent");
         }
 
         try {
@@ -127,6 +137,40 @@ public class PlayerListener {
         }
     }
 
+    private void onAddPlayerToWorld(AddPlayerToWorldEvent event) {
+        Holder<EntityStore> holder = event.getHolder();
+        World world = event.getWorld();
+
+        if (holder == null || world == null) {
+            return;
+        }
+
+        PlayerRef playerRef = holder.getComponent(PlayerRef.getComponentType());
+        if (playerRef == null) {
+            return;
+        }
+
+        UUID uuid = playerRef.getUuid();
+        TagManager tagManager = TagManager.get();
+        World previousWorld = tagManager.getOnlineWorld(uuid);
+
+        try {
+            if (previousWorld != null && !previousWorld.getName().equals(world.getName())) {
+                try {
+                    GlyphNameplateManager.get().remove(uuid, previousWorld);
+                } catch (Throwable ignored) {
+                    GlyphNameplateManager.get().forget(uuid);
+                }
+
+                tagManager.trackOnlinePlayer(playerRef, world);
+                tagManager.refreshNameplate(playerRef, world);
+            }
+        } catch (Throwable t) {
+            LOGGER.at(Level.FINE).withCause(t)
+                    .log("[MysticNameTags] Failed AddPlayerToWorld refresh for %s", uuid);
+        }
+    }
+
     private void onPlayerReady(PlayerReadyEvent event) {
         Ref<EntityStore> ref = event.getPlayerRef();
         if (ref == null || !ref.isValid()) {
@@ -196,8 +240,13 @@ public class PlayerListener {
         }
 
         World world = TagManager.get().getOnlineWorld(uuid);
-        if (world != null) {
-            GlyphNameplateManager.get().remove(uuid, world);
+        try {
+            if (world != null) {
+                GlyphNameplateManager.get().remove(uuid, world);
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            GlyphNameplateManager.get().forget(uuid);
         }
 
         try {
