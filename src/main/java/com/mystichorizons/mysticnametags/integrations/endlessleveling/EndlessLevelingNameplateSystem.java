@@ -6,8 +6,8 @@ import com.hypixel.hytale.component.Ref;
 import com.hypixel.hytale.component.Store;
 import com.hypixel.hytale.component.query.Query;
 import com.hypixel.hytale.component.system.tick.TickingSystem;
-import com.hypixel.hytale.server.core.entity.nameplate.Nameplate;
 import com.hypixel.hytale.server.core.universe.PlayerRef;
+import com.hypixel.hytale.server.core.universe.world.World;
 import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.tags.TagManager;
@@ -24,7 +24,11 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
     private final PlayerDataManager playerDataManager;
     private final TagManager tagManager;
 
-    private final Map<UUID, String> lastLabels = new ConcurrentHashMap<>();
+    /**
+     * Small fingerprint of EL state.
+     * When this changes, we refresh the player through the unified resolver pipeline.
+     */
+    private final Map<UUID, String> lastStateKeys = new ConcurrentHashMap<>();
 
     public EndlessLevelingNameplateSystem(@Nonnull PlayerDataManager playerDataManager,
                                           @Nonnull TagManager tagManager) {
@@ -40,9 +44,6 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
         if (!s.isNameplatesEnabled()) return;
         if (!s.isEndlessLevelingNameplatesEnabled()) return;
 
-        final boolean showRace = s.isEndlessRaceDisplayEnabled();
-        final boolean showPrestige = s.isEndlessPrestigeDisplayEnabled();
-
         store.forEachChunk(PLAYER_QUERY, (chunk, commandBuffer) -> {
             for (int i = 0; i < chunk.size(); i++) {
                 Ref<EntityStore> ref = chunk.getReferenceTo(i);
@@ -54,7 +55,10 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
                 UUID uuid = playerRef.getUuid();
                 if (uuid == null) continue;
 
-                String baseName = playerRef.getUsername() != null ? playerRef.getUsername() : "Player";
+                String baseName = playerRef.getUsername();
+                if (baseName == null || baseName.isBlank()) {
+                    baseName = "Player";
+                }
 
                 PlayerData data = playerDataManager.get(uuid);
                 if (data == null) {
@@ -63,51 +67,36 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
                 }
 
                 int level = Math.max(1, data.getLevel());
-
-                // Adjust getter name to whatever EndlessLeveling uses
                 int prestige = Math.max(0, data.getPrestigeLevel());
 
-                String plain = tagManager.buildPlainNameplate(playerRef, baseName, uuid);
-
-                StringBuilder label = new StringBuilder();
-
-                if (showRace) {
-                    String raceId = data.getRaceId();
-                    if (raceId == null || raceId.isBlank()) {
-                        raceId = PlayerData.DEFAULT_RACE_ID;
-                    }
-                    label.append(raceId).append(" \u2022 ");
+                String raceId = data.getRaceId();
+                if (raceId == null || raceId.isBlank()) {
+                    raceId = PlayerData.DEFAULT_RACE_ID;
                 }
 
-                label.append(plain).append(" - ");
+                String stateKey = level + "|" + prestige + "|" + raceId;
 
-                if (showPrestige && prestige > 0) {
-                    label.append(s.getEndlessPrestigePrefix())
-                            .append(prestige)
-                            .append(" ");
+                String previous = lastStateKeys.put(uuid, stateKey);
+                if (stateKey.equals(previous)) {
+                    continue;
                 }
 
-                label.append("Lvl.").append(level);
+                World world = ((EntityStore) commandBuffer.getExternalData()).getWorld();
+                if (world == null) continue;
 
-                String finalLabel = label.toString();
-
-                String prev = lastLabels.get(uuid);
-                if (finalLabel.equals(prev)) continue;
-
-                Nameplate nameplate = commandBuffer.ensureAndGetComponent(ref, Nameplate.getComponentType());
-                if (nameplate == null) continue;
-
-                nameplate.setText(finalLabel);
-                lastLabels.put(uuid, finalLabel);
+                try {
+                    tagManager.refreshNameplate(playerRef, world);
+                } catch (Throwable ignored) {
+                }
             }
         });
     }
 
     public void invalidate(@Nonnull UUID uuid) {
-        lastLabels.remove(uuid);
+        lastStateKeys.remove(uuid);
     }
 
     public void forget(@Nonnull UUID uuid) {
-        lastLabels.remove(uuid);
+        lastStateKeys.remove(uuid);
     }
 }
