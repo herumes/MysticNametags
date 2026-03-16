@@ -3,30 +3,32 @@ package com.mystichorizons.mysticnametags.tags;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
+import com.hypixel.hytale.component.Ref;
+import com.hypixel.hytale.component.Store;
 import com.hypixel.hytale.logger.HytaleLogger;
 import com.hypixel.hytale.server.core.universe.PlayerRef;
+import com.hypixel.hytale.server.core.universe.world.World;
+import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 import com.mystichorizons.mysticnametags.MysticNameTagsPlugin;
 import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.integrations.IntegrationManager;
 import com.mystichorizons.mysticnametags.nameplate.GlyphNameplateManager;
+import com.mystichorizons.mysticnametags.nameplate.NameplateManager;
 import com.mystichorizons.mysticnametags.nameplate.NameplateTextResolver;
 import com.mystichorizons.mysticnametags.util.ColorFormatter;
-import com.hypixel.hytale.server.core.universe.world.World;
-import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
-import com.hypixel.hytale.component.Store;
-import com.hypixel.hytale.component.Ref;
-import com.mystichorizons.mysticnametags.nameplate.NameplateManager;
 import com.mystichorizons.mysticnametags.util.ConsoleCommandRunner;
-
-import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.lang.reflect.Type;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 public class TagManager {
@@ -51,10 +53,13 @@ public class TagManager {
     private final Map<String, TagDefinition> tags = new LinkedHashMap<>();
     private final PlayerTagStore playerTagStore;
     private final Map<UUID, PlayerTagData> playerData = new HashMap<>();
+
     // Cache of the last applied nameplate text (colored or plain)
     private final Map<UUID, String> lastNameplateText = new ConcurrentHashMap<>();
+
     private final Map<UUID, PlayerRef> onlinePlayers = new ConcurrentHashMap<>();
-    private final Map<UUID, World>    onlineWorlds  = new ConcurrentHashMap<>();
+    private final Map<UUID, World> onlineWorlds = new ConcurrentHashMap<>();
+
     private final IntegrationManager integrations;
 
     // Cache of "canUseTag" decisions per player + tag id (lowercase).
@@ -110,26 +115,24 @@ public class TagManager {
 
         switch (backend) {
             case SQLITE: {
-                // SQLite file is relative to plugin data folder
                 File sqliteFile = new File(dataFolder, settings.getSqliteFile());
                 String jdbcUrl = "jdbc:sqlite:" + sqliteFile.getAbsolutePath();
 
                 store = new SqlPlayerTagStore(
                         jdbcUrl,
-                        "",            // no user
-                        "",            // no password
+                        "",
+                        "",
                         GSON
                 );
 
-                // Auto-migrate from legacy playerdata/*.json if present
                 store.migrateFromFolder(playerDataFolder, GSON);
                 break;
             }
 
             case MYSQL: {
                 String host = settings.getMysqlHost();
-                int    port = settings.getMysqlPort();
-                String db   = settings.getMysqlDatabase();
+                int port = settings.getMysqlPort();
+                String db = settings.getMysqlDatabase();
                 String user = settings.getMysqlUser();
                 String pass = settings.getMysqlPassword();
 
@@ -137,8 +140,6 @@ public class TagManager {
                         "?useSSL=false&autoReconnect=true&characterEncoding=UTF-8";
 
                 store = new SqlPlayerTagStore(jdbcUrl, user, pass, GSON);
-
-                // Auto-migrate from legacy JSON if present
                 store.migrateFromFolder(playerDataFolder, GSON);
                 break;
             }
@@ -167,16 +168,15 @@ public class TagManager {
                                  new FileInputStream(configFile),
                                  StandardCharsets.UTF_8)) {
 
-                Type listType = new TypeToken<List<TagDefinition>>(){}.getType();
+                Type listType = new TypeToken<List<TagDefinition>>() {}.getType();
                 list = GSON.fromJson(reader, listType);
             }
 
-            int rawCount         = (list != null) ? list.size() : 0;
-            int skippedNull      = 0;
-            int skippedNoId      = 0;
+            int rawCount = (list != null) ? list.size() : 0;
+            int skippedNull = 0;
+            int skippedNoId = 0;
             int overwrittenDupes = 0;
 
-            // ----- Auto-upgrade: ensure all tags have a category -----
             boolean upgradedCategories = upgradeCategoriesIfNeeded(list);
             boolean upgradedStats = upgradeStatRequirementsIfNeeded(list);
 
@@ -205,10 +205,8 @@ public class TagManager {
                 }
             }
 
-            // Rebuild tagList
             tagList = List.copyOf(tags.values());
 
-            // rebuild category list from current definitions
             Set<String> catSet = new LinkedHashSet<>();
             for (TagDefinition def : tags.values()) {
                 String cat = def.getCategory();
@@ -235,8 +233,6 @@ public class TagManager {
             LOGGER.at(Level.INFO).log("[MysticNameTags] Loaded " + tags.size() + " unique tags.");
             LOGGER.at(Level.INFO).log("[MysticNameTags] Detected " + categories.size() + " categories: " + categories);
 
-            // If we upgraded any entries (added default categories),
-            // write the new structure back to disk so the file is permanently updated.
             if ((upgradedCategories || upgradedStats) && list != null) {
                 saveConfig(list);
             }
@@ -247,13 +243,6 @@ public class TagManager {
         }
     }
 
-    /**
-     * Auto-upgrade step: ensure every tag has a non-empty category.
-     * This is mainly for older tags.json files created before categories existed.
-     *
-     * @param list the parsed tag list (may be null)
-     * @return true if any tag was modified and the file should be saved back.
-     */
     private boolean upgradeCategoriesIfNeeded(@Nullable List<TagDefinition> list) {
         if (list == null || list.isEmpty()) {
             return false;
@@ -281,26 +270,6 @@ public class TagManager {
         return changed;
     }
 
-    /**
-     * Auto-upgrade legacy stat requirement fields:
-     *
-     * Old:
-     *   "requiredStatKey": "killed.goblin_miner",
-     *   "requiredStatValue": 100
-     *
-     * New:
-     *   "requiredStats": [
-     *     { "key": "killed.goblin_miner", "min": 100 }
-     *   ]
-     *
-     * Rules:
-     * - If requiredStats already exists and is non-empty, leave it alone.
-     * - If legacy fields are present and valid, convert them to requiredStats.
-     * - Clear legacy fields afterward so the rewritten tags.json uses only the new format.
-     *
-     * @param list parsed tags list
-     * @return true if any tag was upgraded and file should be re-saved
-     */
     private boolean upgradeStatRequirementsIfNeeded(@Nullable List<TagDefinition> list) {
         if (list == null || list.isEmpty()) {
             return false;
@@ -313,7 +282,6 @@ public class TagManager {
                 continue;
             }
 
-            // Already using new format -> leave as-is
             List<TagDefinition.StatRequirement> current = def.getRequiredStats();
             boolean hasNewFormat =
                     current != null &&
@@ -332,9 +300,6 @@ public class TagManager {
             }
 
             TagDefinition.StatRequirement migrated = new TagDefinition.StatRequirement();
-
-            // Because TagManager is in the same package as TagDefinition,
-            // package-private field assignment works.
             migrated.key = legacyKey.trim();
             migrated.min = legacyMin;
 
@@ -357,7 +322,6 @@ public class TagManager {
         return changed;
     }
 
-
     private static final class CanUseCacheEntry {
         private final boolean value;
         private final long timestamp;
@@ -372,9 +336,6 @@ public class TagManager {
         }
     }
 
-    /**
-     * Writes the given tag list back to tags.json using the shared GSON instance.
-     */
     private void saveConfig(@Nonnull List<TagDefinition> list) {
         try (OutputStreamWriter writer =
                      new OutputStreamWriter(
@@ -433,13 +394,8 @@ public class TagManager {
 
         LOGGER.at(Level.INFO).log("[MysticNameTags] Reloading tags.json...");
 
-        // Re-read tags.json
         instance.loadConfig();
-
-        // Clear "canUse" cache since permissions / tags may change
         instance.clearCanUseCache();
-
-        // Optionally re-apply nameplates for all online players
         instance.refreshAllOnlineNameplates();
 
         LOGGER.at(Level.INFO).log("[MysticNameTags] tags.json reload complete.");
@@ -510,14 +466,6 @@ public class TagManager {
         return true;
     }
 
-    /**
-     * Returns true if the player can use this tag:
-     * - already owns it in their saved data, OR
-     * - has the permission node configured on the tag,
-     * AND they meet any non-item requirements (playtime, stats, required tags).
-     *
-     * Results are cached per-player to keep UI snappy when many tags exist.
-     */
     public boolean canUseTag(@Nonnull PlayerRef playerRef,
                              @Nullable UUID uuid,
                              @Nonnull TagDefinition def) {
@@ -548,9 +496,6 @@ public class TagManager {
         return internalCanUseTagUnchecked(playerRef, uuid, def, keyId);
     }
 
-    /**
-     * Actual logic for "canUseTag" without caching concerns.
-     */
     private boolean internalCanUseTagUnchecked(@Nonnull PlayerRef playerRef,
                                                @Nullable UUID uuid,
                                                @Nonnull TagDefinition def,
@@ -569,14 +514,10 @@ public class TagManager {
             }
         }
 
-        // 1) Full permission gate:
-        // If enabled and the tag defines a permission node, player must have it.
         if (fullGate && perm != null && !perm.isEmpty() && !hasPerm) {
             return false;
         }
 
-        // 2) No UUID = preview-only / non-persistent context.
-        // In this case, only permission-based access can be evaluated.
         if (uuid == null) {
             if (perm != null && !perm.isEmpty()) {
                 if (permissionGate || fullGate) {
@@ -590,16 +531,10 @@ public class TagManager {
         PlayerTagData data = getOrLoad(uuid);
         boolean owns = data.owns(normalizedId);
 
-        // 3) Permission Gate:
-        // If enabled and tag has a permission node, permission is required
-        // to unlock/equip/use the tag even if it is visible in the UI.
         if (permissionGate && perm != null && !perm.isEmpty() && !hasPerm) {
             return false;
         }
 
-        // 4) Base access when no permission gate is active:
-        // player can use the tag if they own it OR have the permission
-        // OR if no permission is defined and ownership is enough.
         if (!permissionGate) {
             if (perm != null && !perm.isEmpty()) {
                 if (!owns && !hasPerm) {
@@ -609,8 +544,6 @@ public class TagManager {
                 return false;
             }
         } else {
-            // Permission gate active:
-            // ownership alone is not enough when a permission node exists.
             if (perm == null || perm.isEmpty()) {
                 if (!owns) {
                     return false;
@@ -618,31 +551,13 @@ public class TagManager {
             }
         }
 
-        // 5) Other requirements must still be met.
-        if (!meetsRequirements(uuid, playerRef, def)) {
-            return false;
-        }
-
-        return true;
+        return meetsRequirements(uuid, playerRef, def);
     }
 
-    /**
-     * Returns true if the player satisfies ALL non-permission requirements
-     * for this tag:
-     *  - requiredOwnedTags
-     *  - requiredPlaytimeMinutes
-     *  - requiredStatKey / requiredStatValue
-     *
-     * NOTE: this does NOT check:
-     *  - tag permission (that is handled by full-gate & perm logic)
-     *  - price / economy
-     *  - item requirements (those are treated as unlock costs only)
-     */
     private boolean meetsRequirements(@Nonnull UUID uuid,
                                       @Nonnull PlayerRef playerRef,
                                       @Nonnull TagDefinition def) {
 
-        // 1) Required owned tags
         List<String> requiredTags = def.getRequiredOwnedTags();
         if (!requiredTags.isEmpty()) {
             PlayerTagData data = getOrLoad(uuid);
@@ -654,7 +569,6 @@ public class TagManager {
             }
         }
 
-        // 2) Required playtime
         Integer reqMinutes = def.getRequiredPlaytimeMinutes();
         if (reqMinutes != null && reqMinutes > 0) {
             Integer playtime = integrations.getPlaytimeMinutes(uuid);
@@ -663,12 +577,11 @@ public class TagManager {
             }
         }
 
-        // 3) Required stats (supports multiple + wildcard)
         List<TagDefinition.StatRequirement> statReqs = def.getRequiredStats();
         if (!statReqs.isEmpty()) {
             for (TagDefinition.StatRequirement req : statReqs) {
                 if (req == null || !req.isValid()) {
-                    return false; // malformed config -> fail safe
+                    return false;
                 }
 
                 Integer current;
@@ -685,18 +598,16 @@ public class TagManager {
             }
         }
 
-        // 4) Placeholder-based requirements
         List<TagDefinition.PlaceholderRequirement> phReqs = def.getPlaceholderRequirements();
         if (phReqs != null && !phReqs.isEmpty()) {
             for (TagDefinition.PlaceholderRequirement req : phReqs) {
                 if (req == null) continue;
 
                 String placeholder = req.getPlaceholder();
-                String op          = req.getOperator();
-                String expected    = req.getValue();
+                String op = req.getOperator();
+                String expected = req.getValue();
 
                 if (placeholder == null || op == null || expected == null) {
-                    // Malformed entry – treat as not met to avoid free bypass
                     return false;
                 }
 
@@ -707,7 +618,6 @@ public class TagManager {
             }
         }
 
-        // Item requirements intentionally NOT checked here.
         return true;
     }
 
@@ -720,8 +630,8 @@ public class TagManager {
                 if (req == null) continue;
 
                 String placeholder = req.getPlaceholder();
-                String op          = req.getOperator();
-                String expected    = req.getValue();
+                String op = req.getOperator();
+                String expected = req.getValue();
 
                 if (placeholder == null || op == null || expected == null) {
                     return false;
@@ -737,35 +647,25 @@ public class TagManager {
         return true;
     }
 
-    /**
-     * Check unlock Requirements (without consuming anything):
-     *  - requiredOwnedTags / playtime / stats
-     *  - requiredItems presence (does NOT consume them)
-     *
-     * Returns REQUIREMENTS_NOT_MET on failure, or null if ok.
-     */
     private TagPurchaseResult checkRequirements(@Nonnull UUID uuid,
                                                 @Nonnull PlayerRef playerRef,
                                                 @Nonnull TagDefinition def) {
 
-        // Non-item requirements first
         if (!meetsRequirements(uuid, playerRef, def)) {
             return TagPurchaseResult.REQUIREMENTS_NOT_MET;
         }
 
-        // Required items: must be present in inventory (but not consumed yet)
         if (def.hasItemRequirements()) {
             try {
                 if (!integrations.hasItems(playerRef, def.getRequiredItems())) {
                     return TagPurchaseResult.REQUIREMENTS_NOT_MET;
                 }
             } catch (Throwable t) {
-                // Fail-safe: treat as not met
                 return TagPurchaseResult.REQUIREMENTS_NOT_MET;
             }
         }
 
-        return null; // ok
+        return null;
     }
 
     private boolean evaluatePlaceholderCondition(@Nullable String actual,
@@ -779,9 +679,6 @@ public class TagManager {
         String exp = expected.trim();
         String a = actual.trim();
 
-        // Boolean-style operators:
-        // "true"  => resolved placeholder must be true
-        // "false" => resolved placeholder must be false
         if (op.equalsIgnoreCase("true")) {
             return "true".equalsIgnoreCase(a);
         }
@@ -789,7 +686,6 @@ public class TagManager {
             return "false".equalsIgnoreCase(a);
         }
 
-        // Boolean equality
         boolean actualIsBool = "true".equalsIgnoreCase(a) || "false".equalsIgnoreCase(a);
         boolean expectedIsBool = "true".equalsIgnoreCase(exp) || "false".equalsIgnoreCase(exp);
 
@@ -804,7 +700,6 @@ public class TagManager {
             }
         }
 
-        // Numeric comparison
         Double actualNum = tryParseDouble(a);
         Double expNum = tryParseDouble(exp);
 
@@ -812,15 +707,14 @@ public class TagManager {
             switch (op) {
                 case "==": return Double.compare(actualNum, expNum) == 0;
                 case "!=": return Double.compare(actualNum, expNum) != 0;
-                case ">":  return actualNum > expNum;
+                case ">": return actualNum > expNum;
                 case ">=": return actualNum >= expNum;
-                case "<":  return actualNum < expNum;
+                case "<": return actualNum < expNum;
                 case "<=": return actualNum <= expNum;
                 default: break;
             }
         }
 
-        // String comparison
         switch (op) {
             case "==": return a.equalsIgnoreCase(exp);
             case "!=": return !a.equalsIgnoreCase(exp);
@@ -838,14 +732,6 @@ public class TagManager {
         }
     }
 
-    /**
-     * Toggle a tag:
-     * - If currently equipped: unequip.
-     * - Otherwise: purchase (if needed) and equip.
-     *
-     * UI / listeners are responsible for reacting to the result and
-     * refreshing nameplates, etc.
-     */
     public TagPurchaseResult toggleTag(@Nonnull PlayerRef playerRef,
                                        @Nonnull UUID uuid,
                                        @Nonnull String id) {
@@ -854,7 +740,6 @@ public class TagManager {
             return TagPurchaseResult.NOT_FOUND;
         }
 
-        // Always normalize IDs when talking to PlayerTagData
         String rawId = def.getId();
         if (rawId == null || rawId.isEmpty()) {
             return TagPurchaseResult.NOT_FOUND;
@@ -863,21 +748,15 @@ public class TagManager {
 
         PlayerTagData data = getOrLoad(uuid);
 
-        // If this tag is already equipped -> unequip
         String equipped = data.getEquipped();
         if (equipped != null && equipped.equalsIgnoreCase(keyId)) {
             data.setEquipped(null);
             savePlayerData(uuid);
-
-            // Any "canUse" cache for this player+tag is now stale
             clearCanUseCache(uuid);
-
             refreshIfOnline(uuid);
-
             return TagPurchaseResult.UNEQUIPPED;
         }
 
-        // Otherwise, delegate to purchase + equip (using normalized id)
         return purchaseAndEquip(playerRef, uuid, keyId);
     }
 
@@ -893,16 +772,12 @@ public class TagManager {
         if (rawId == null || rawId.isEmpty()) {
             return TagPurchaseResult.NOT_FOUND;
         }
-        // Normalized ID used for all PlayerTagData operations
         String keyId = rawId.toLowerCase(Locale.ROOT);
 
         boolean fullGate = Settings.get().isFullPermissionGateEnabled();
         boolean permissionGate = Settings.get().isPermissionGateEnabled();
         String perm = def.getPermission();
 
-        // Full Permission Gate OR Permission Gate:
-        // if the tag defines a permission node, require it up-front before
-        // unlock/equip when either gate is enabled.
         if ((fullGate || permissionGate) && perm != null && !perm.isEmpty()) {
             try {
                 if (!integrations.hasPermission(playerRef, perm)) {
@@ -913,7 +788,6 @@ public class TagManager {
             }
         }
 
-        // Requirement Check if any (tags, playtime, stat, item presence)
         TagPurchaseResult reqFail = checkRequirements(uuid, playerRef, def);
         if (reqFail != null) {
             return reqFail;
@@ -921,21 +795,15 @@ public class TagManager {
 
         PlayerTagData data = getOrLoad(uuid);
 
-        // Already owned: just equip
         if (data.owns(keyId)) {
             data.setEquipped(keyId);
             savePlayerData(uuid);
-            clearCanUseCache(uuid); // ownership/equip status affects canUseTag
-
+            clearCanUseCache(uuid);
             refreshIfOnline(uuid);
-
             return TagPurchaseResult.EQUIPPED_ALREADY_OWNED;
         }
 
-        // Free / non-purchasable tags – no economy needed
         if (!def.isPurchasable() || def.getPrice() <= 0) {
-
-            // Item-only unlock (or items + other requirements)
             if (!consumeItemsIfNeeded(playerRef, def)) {
                 return TagPurchaseResult.TRANSACTION_FAILED;
             }
@@ -946,19 +814,15 @@ public class TagManager {
 
             runOnFirstUnlockCommands(def, playerRef);
 
-            // grant permission if defined (for non-full-gate setups)
             if (!Settings.get().isFullPermissionGateEnabled() && !Settings.get().isPermissionGateEnabled()) {
                 maybeGrantPermission(uuid, perm);
             }
 
             clearCanUseCache(uuid);
-
             refreshIfOnline(uuid);
-
             return TagPurchaseResult.UNLOCKED_FREE;
         }
 
-        // Paid tag – requires some economy backend
         if (!integrations.hasAnyEconomy()) {
             return TagPurchaseResult.NO_ECONOMY;
         }
@@ -967,14 +831,10 @@ public class TagManager {
             return TagPurchaseResult.NOT_ENOUGH_MONEY;
         }
 
-        // At this point we *know* items are present (checkRequirements).
-        // Withdraw money first:
         if (!integrations.withdraw(playerRef, uuid, def.getPrice())) {
             return TagPurchaseResult.TRANSACTION_FAILED;
         }
 
-        // And now consume items.
-        // (If this fails we *could* attempt a refund; for now we just fail.)
         if (!consumeItemsIfNeeded(playerRef, def)) {
             return TagPurchaseResult.TRANSACTION_FAILED;
         }
@@ -985,104 +845,51 @@ public class TagManager {
 
         runOnFirstUnlockCommands(def, playerRef);
 
-        // grant permission if defined (for non-full-gate setups)
         if (!Settings.get().isFullPermissionGateEnabled() && !Settings.get().isPermissionGateEnabled()) {
             maybeGrantPermission(uuid, perm);
         }
 
         clearCanUseCache(uuid);
-
         refreshIfOnline(uuid);
-
         return TagPurchaseResult.UNLOCKED_PAID;
     }
 
     /**
-     * Build the final COLORED “[Rank] Name [Tag]” string
-     * for chat / scoreboards / UI previews (NOT for Nameplate component).
+     * Build the final colored nameplate text for previews/chat/UI.
      */
     public String buildNameplate(@Nonnull PlayerRef playerRef,
                                  @Nonnull String baseName,
                                  @Nullable UUID uuid) {
-        String rank = null;
-        String tag  = null;
-
-        if (uuid != null) {
-            // Use the unified prefix backend (PrefixesPlus -> LuckPerms -> none)
-            rank = integrations.getPrimaryPrefix(uuid);
-            TagDefinition active = resolveActiveOrDefaultTag(uuid);
-            if (active != null) {
-                tag = active.getDisplay(); // e.g. "&#8A2BE2&l[Mystic]"
-            }
-        }
-
-        return NameplateTextResolver.build(playerRef, rank, baseName, tag);
+        NameplateTextResolver.Context ctx = buildNameplateContext(playerRef, baseName, uuid);
+        return NameplateTextResolver.resolve(ctx).getColored();
     }
 
-    /**
-     * Convenience: full colored “[Rank] Name [Tag]” from PlayerRef.
-     */
     public String getColoredFullNameplate(@Nonnull PlayerRef playerRef) {
         UUID uuid = playerRef.getUuid();
         String baseName = playerRef.getUsername();
-        return buildNameplate(playerRef, baseName, uuid);
+        NameplateTextResolver.Context ctx = buildNameplateContext(playerRef, baseName, uuid);
+        return NameplateTextResolver.resolve(ctx).getColored();
     }
 
-    /**
-     * Convenience: full colored “[Rank] Name [Tag]” from UUID + name
-     * (for places where we don't have a PlayerRef on hand).
-     */
     public String getColoredFullNameplate(UUID uuid, String baseName) {
         PlayerRef ref = onlinePlayers.get(uuid);
-        if (ref != null) {
-            // NameplateTextResolver.build should already be returning something
-            // suitable for chat/scoreboard (with &# codes, WiFlow/helpch applied, etc.)
-            return buildNameplate(ref, baseName, uuid);
-        }
-
-        // Fallback path when we only have UUID + base name
-        String rank = integrations.getPrimaryPrefix(uuid);
-        TagDefinition active = getEquipped(uuid);
-        String tagDisplay = (active != null) ? active.getDisplay() : null;
-
-        String formatted = Settings.get().formatNameplate(rank, baseName, tagDisplay);
-        // Again: keep &#RRGGBB, normalize only § → &
-        return ColorFormatter.translateAlternateColorCodes('§', formatted);
+        NameplateTextResolver.Context ctx = buildNameplateContext(ref, baseName, uuid);
+        return NameplateTextResolver.resolve(ctx).getColored();
     }
 
-    /**
-     * Plain “[Rank] Name [Tag]” with all formatting stripped.
-     */
     public String getPlainFullNameplate(UUID uuid, String baseName) {
-        String colored = getColoredFullNameplate(uuid, baseName);
-        return ColorFormatter.stripFormatting(colored).trim();
+        PlayerRef ref = onlinePlayers.get(uuid);
+        NameplateTextResolver.Context ctx = buildNameplateContext(ref, baseName, uuid);
+        return NameplateTextResolver.resolve(ctx).getPlain();
     }
 
-    /**
-     * Build the final *plain* nameplate text for Nameplate component:
-     * [Rank] Name [Tag], with ALL color codes stripped.
-     */
     public String buildPlainNameplate(@Nonnull PlayerRef playerRef,
                                       @Nonnull String baseName,
                                       @Nullable UUID uuid) {
-
-        String rank = null;
-        String tag  = null;
-
-        if (uuid != null) {
-            rank = integrations.getPrimaryPrefix(uuid);
-            TagDefinition active = resolveActiveOrDefaultTag(uuid);
-            if (active != null) tag = active.getDisplay();
-        }
-
-        String built = NameplateTextResolver.build(playerRef, rank, baseName, tag);
-        return ColorFormatter.stripFormatting(built).trim();
+        NameplateTextResolver.Context ctx = buildNameplateContext(playerRef, baseName, uuid);
+        return NameplateTextResolver.resolve(ctx).getPlain();
     }
 
-    /**
-     * Rebuild and apply the nameplate for this player if it changed.
-     * Entry point for join, tag changes, rank changes, etc.
-     */
     public void refreshNameplate(@Nonnull PlayerRef playerRef,
                                  @Nonnull World world) {
 
@@ -1094,7 +901,6 @@ public class TagManager {
 
         Settings settings = Settings.get();
 
-        // Nameplates disabled entirely -> restore vanilla and remove glyphs
         if (!settings.isNameplatesEnabled()) {
             String fallbackName = baseName;
 
@@ -1102,76 +908,46 @@ public class TagManager {
                 try {
                     Store<EntityStore> store = world.getEntityStore().getStore();
                     Ref<EntityStore> ref = playerRef.getReference();
-                    if (ref == null || !ref.isValid()) return;
+                    if (ref == null || !ref.isValid()) {
+                        lastNameplateText.remove(uuid);
+                        return;
+                    }
 
                     NameplateManager.get().restore(uuid, store, ref, fallbackName);
                     GlyphNameplateManager.get().remove(uuid, world, store);
+                    lastNameplateText.remove(uuid);
                 } catch (Throwable ignored) {
+                    lastNameplateText.remove(uuid);
                 }
             });
 
-            lastNameplateText.remove(uuid);
             return;
         }
 
-        String rank = integrations.getPrimaryPrefix(uuid);
-        TagDefinition active = resolveActiveOrDefaultTag(uuid);
-        String tag = (active != null) ? active.getDisplay() : null;
+        NameplateTextResolver.Context ctx = buildNameplateContext(playerRef, baseName, uuid);
+        NameplateTextResolver.ResolvedNameplateText resolved = NameplateTextResolver.resolve(ctx);
 
-        // IMPORTANT:
-        // NameplateTextResolver.build(...) should be your single source of truth.
-        // Make sure EL level/race are included there or in the integrations path it calls.
-        String resolvedColored = NameplateTextResolver.build(playerRef, rank, baseName, tag);
-        String plainFallback = ColorFormatter.stripFormatting(resolvedColored).trim();
+        String resolvedColored = resolved.getColored();
+        String plainFallback = resolved.getPlain();
 
         boolean glyphEnabled = settings.isExperimentalGlyphNameplatesEnabled();
-
-        // Glyph mode must compare COLORED text so color-only changes rebuild glyphs.
-        // Vanilla mode can compare stripped text.
         String compareKey = glyphEnabled ? resolvedColored : plainFallback;
-
-        String previous = lastNameplateText.put(uuid, compareKey);
-
-        // Do not skip if glyph mode is enabled but the glyph state does not exist yet.
-        if (previous != null && previous.equals(compareKey)) {
-            if (!glyphEnabled || GlyphNameplateManager.get().hasState(uuid)) {
-                return;
-            }
-        }
 
         String finalBaseName = baseName;
         String finalResolvedColored = resolvedColored;
         String finalPlainFallback = plainFallback;
 
-        world.execute(() -> {
-            try {
-                EntityStore entityStore = world.getEntityStore();
-                Store<EntityStore> store = entityStore.getStore();
-
-                Ref<EntityStore> ref = playerRef.getReference();
-                if (ref == null || !ref.isValid()) return;
-
-                if (glyphEnabled) {
-                    // Hide vanilla text without fully removing the component.
-                    // A single space tends to be safer than empty-string in some builds.
-                    NameplateManager.get().apply(uuid, store, ref, " ");
-
-                    // Glyph overlay renders the full colored text.
-                    GlyphNameplateManager.get().apply(uuid, world, store, ref, finalResolvedColored);
-                } else {
-                    NameplateManager.get().apply(uuid, store, ref, finalPlainFallback);
-                    GlyphNameplateManager.get().remove(uuid, world, store);
-                }
-
-                if (settings.isEndlessLevelingNameplatesEnabled()) {
-                    integrations.invalidateEndlessLevelingNameplate(uuid);
-                }
-
-            } catch (Throwable e) {
-                LOGGER.at(Level.WARNING).withCause(e)
-                        .log("[MysticNameTags] Failed to refresh nameplate for %s", finalBaseName);
-            }
-        });
+        world.execute(() -> applyNameplateNow(
+                playerRef,
+                world,
+                uuid,
+                compareKey,
+                finalBaseName,
+                finalResolvedColored,
+                finalPlainFallback,
+                glyphEnabled,
+                0
+        ));
     }
 
     // ------------- Helper builder -------------
@@ -1232,26 +1008,25 @@ public class TagManager {
         TRANSACTION_FAILED
     }
 
-    /**
-     * Expose integrations for UI controllers (e.g. to show balances).
-     */
     public IntegrationManager getIntegrations() {
         return integrations;
     }
 
-    /**
-     * Clear cached nameplate when the player fully leaves.
-     */
     public void forgetNameplate(@Nonnull UUID uuid) {
         lastNameplateText.remove(uuid);
     }
 
-    // ---- Online tracking (for fast, low-cost refreshes) ----
+    // ---- Online tracking ----
 
     public void trackOnlinePlayer(@Nonnull PlayerRef ref, @Nonnull World world) {
         UUID uuid = ref.getUuid();
         onlinePlayers.put(uuid, ref);
         onlineWorlds.put(uuid, world);
+    }
+
+    @Nonnull
+    public Set<UUID> getTrackedOnlinePlayerIds() {
+        return new HashSet<>(onlinePlayers.keySet());
     }
 
     public void untrackOnlinePlayer(@Nonnull UUID uuid) {
@@ -1262,7 +1037,7 @@ public class TagManager {
 
         NameplateManager.get().forget(uuid);
 
-        // DO NOT call GlyphNameplateManager.forget(uuid) here.
+        // Do not call GlyphNameplateManager.forget(uuid) here.
         // Disconnect flow should remove glyphs first on the world thread.
     }
 
@@ -1287,15 +1062,10 @@ public class TagManager {
             return "";
         }
 
-        // For placeholders/chat: keep &#RRGGBB intact, just normalize § → &
         return ColorFormatter.translateAlternateColorCodes('§', display);
     }
 
     public String getPlainActiveTag(@Nonnull UUID uuid) {
-        // BEFORE:
-        // TagDefinition def = getEquipped(uuid);
-
-        // AFTER: respect default tag as “active”
         TagDefinition def = resolveActiveOrDefaultTag(uuid);
         if (def == null) {
             return "";
@@ -1303,10 +1073,6 @@ public class TagManager {
         return ColorFormatter.stripFormatting(def.getDisplay());
     }
 
-    /**
-     * Rebuild and apply nameplates for all currently tracked online players.
-     * Called after /tags reload so new tag definitions + perms are reflected.
-     */
     private void refreshAllOnlineNameplates() {
         if (onlinePlayers.isEmpty()) {
             return;
@@ -1333,10 +1099,6 @@ public class TagManager {
         }
     }
 
-    /**
-     * Returns a view of tags for the given page (zero-based).
-     * If page is out of range, it will be clamped.
-     */
     public List<TagDefinition> getTagsPage(int page, int pageSize) {
         if (pageSize <= 0 || tagList.isEmpty()) {
             return Collections.emptyList();
@@ -1350,9 +1112,9 @@ public class TagManager {
 
         int safePage = Math.max(0, Math.min(page, totalPages - 1));
         int start = safePage * pageSize;
-        int end   = Math.min(start + pageSize, total);
+        int end = Math.min(start + pageSize, total);
 
-        return tagList.subList(start, end); // cheap view, no copy
+        return tagList.subList(start, end);
     }
 
     private void maybeGrantPermission(@Nonnull UUID uuid, @Nullable String perm) {
@@ -1362,17 +1124,9 @@ public class TagManager {
         try {
             integrations.grantPermission(uuid, perm);
         } catch (Throwable ignored) {
-            // we don't want permission failures to break purchases
         }
     }
 
-
-    /**
-     * Helper to consume required items for a tag, if any.
-     * Returns true if:
-     *  - no item requirements are defined, OR
-     *  - all required items were successfully consumed by the integration.
-     */
     private boolean consumeItemsIfNeeded(@Nonnull PlayerRef playerRef,
                                          @Nonnull TagDefinition def) {
 
@@ -1391,28 +1145,21 @@ public class TagManager {
     }
 
     // ============================================================
-    // Admin helpers – bypass economy & normal permission flow
+    // Admin helpers
     // ============================================================
 
-    /**
-     * Admin-only: grant a tag to a player, optionally equip it.
-     * Skips economy and permission checks.
-     *
-     * @return true if the tag exists and was added (or already owned), false if tag doesn't exist.
-     */
     public boolean adminGiveTag(@Nonnull UUID uuid,
                                 @Nonnull String id,
                                 boolean equip) {
 
         TagDefinition def = getTag(id);
         if (def == null) {
-            return false; // unknown id
+            return false;
         }
 
         String keyId = def.getId().toLowerCase(Locale.ROOT);
 
         PlayerTagData data = getOrLoad(uuid);
-        // Add to owned set
         data.addOwned(keyId);
 
         if (equip) {
@@ -1422,9 +1169,8 @@ public class TagManager {
         savePlayerData(uuid);
         clearCanUseCache(uuid);
 
-        // Refresh nameplate if they're online
         PlayerRef ref = onlinePlayers.get(uuid);
-        World world   = onlineWorlds.get(uuid);
+        World world = onlineWorlds.get(uuid);
         if (ref != null && world != null) {
             refreshNameplate(ref, world);
         }
@@ -1432,11 +1178,6 @@ public class TagManager {
         return true;
     }
 
-    /**
-     * Admin-only: remove a specific tag from a player.
-     *
-     * @return true if the tag existed in their data and was removed.
-     */
     public boolean adminRemoveTag(@Nonnull UUID uuid,
                                   @Nonnull String id) {
 
@@ -1448,7 +1189,6 @@ public class TagManager {
             return false;
         }
 
-        // If it was equipped, unequip
         if (keyId.equalsIgnoreCase(data.getEquipped())) {
             data.setEquipped(null);
         }
@@ -1457,7 +1197,7 @@ public class TagManager {
         clearCanUseCache(uuid);
 
         PlayerRef ref = onlinePlayers.get(uuid);
-        World world   = onlineWorlds.get(uuid);
+        World world = onlineWorlds.get(uuid);
         if (ref != null && world != null) {
             refreshNameplate(ref, world);
         }
@@ -1465,13 +1205,10 @@ public class TagManager {
         return true;
     }
 
-    /**
-     * Admin-only: wipe all owned/equipped tags for a player.
-     */
     public boolean adminResetTags(@Nonnull UUID uuid) {
         PlayerTagData data = getOrLoad(uuid);
         if (data.getOwned().isEmpty() && data.getEquipped() == null) {
-            return false; // nothing to reset
+            return false;
         }
 
         data.getOwned().clear();
@@ -1480,15 +1217,13 @@ public class TagManager {
         savePlayerData(uuid);
         clearCanUseCache(uuid);
 
-        // Optional: also delete from backend entirely
         try {
             playerTagStore.delete(uuid);
         } catch (Throwable ignored) {
         }
 
-        // Refresh nameplate if they're online
         PlayerRef ref = onlinePlayers.get(uuid);
-        World world   = onlineWorlds.get(uuid);
+        World world = onlineWorlds.get(uuid);
         if (ref != null && world != null) {
             refreshNameplate(ref, world);
         }
@@ -1496,23 +1231,12 @@ public class TagManager {
         return true;
     }
 
-    /**
-     * Admin-only: wipe all owned/equipped tags for a player AND revoke any
-     * tag permissions that MysticNameTags might have granted via the
-     * active permission backend.
-     *
-     * NOTE: This only affects permissions that the backend *resolves* for
-     * these nodes; it does not try to distinguish between "plugin-granted"
-     * and "rank-granted" permissions.
-     */
     public boolean adminResetTagsAndPermissions(@Nonnull UUID uuid) {
-        // First do the normal data reset (owned + equipped + caches + nameplate)
         boolean changed = adminResetTags(uuid);
         if (!changed) {
             return false;
         }
 
-        // Then try to revoke all tag permission nodes for this player.
         for (TagDefinition def : tags.values()) {
             String perm = def.getPermission();
             if (perm == null || perm.isEmpty()) {
@@ -1521,18 +1245,14 @@ public class TagManager {
             try {
                 integrations.revokePermission(uuid, perm);
             } catch (Throwable ignored) {
-                // We don't want a revoke failure to break the whole reset
             }
         }
 
-
-        // Optional: also delete from backend entirely
         try {
             playerTagStore.delete(uuid);
         } catch (Throwable ignored) {
         }
 
-        // No need to refresh nameplate again; adminResetTags already did it.
         return true;
     }
 
@@ -1571,13 +1291,13 @@ public class TagManager {
         if (world != null) {
             world.execute(task);
         } else {
-            task.run();            // offline/not tracked: best-effort
+            task.run();
         }
     }
 
     private void refreshIfOnline(@Nonnull UUID uuid) {
         PlayerRef ref = onlinePlayers.get(uuid);
-        World world   = onlineWorlds.get(uuid);
+        World world = onlineWorlds.get(uuid);
         if (ref != null && world != null) {
             try {
                 refreshNameplate(ref, world);
@@ -1588,9 +1308,6 @@ public class TagManager {
         }
     }
 
-    /**
-     * Returns all TagDefinitions this player owns.
-     */
     @Nonnull
     public List<TagDefinition> getOwnedTags(@Nonnull UUID uuid) {
         PlayerTagData data = getOrLoad(uuid);
@@ -1609,5 +1326,175 @@ public class TagManager {
             }
         }
         return owned;
+    }
+
+    private void applyNameplateNow(@Nonnull PlayerRef playerRef,
+                                   @Nonnull World world,
+                                   @Nonnull UUID uuid,
+                                   @Nonnull String compareKey,
+                                   @Nonnull String baseName,
+                                   @Nonnull String resolvedColored,
+                                   @Nonnull String plainFallback,
+                                   boolean glyphEnabled,
+                                   int attempt) {
+        try {
+            EntityStore entityStore = world.getEntityStore();
+            Store<EntityStore> store = entityStore.getStore();
+
+            Ref<EntityStore> ref = playerRef.getReference();
+            if (ref == null || !ref.isValid()) {
+                if (attempt < 3) {
+                    world.execute(() -> applyNameplateNow(
+                            playerRef,
+                            world,
+                            uuid,
+                            compareKey,
+                            baseName,
+                            resolvedColored,
+                            plainFallback,
+                            glyphEnabled,
+                            attempt + 1
+                    ));
+                } else {
+                    lastNameplateText.remove(uuid);
+                }
+                return;
+            }
+
+            String previous = lastNameplateText.get(uuid);
+            if (previous != null && previous.equals(compareKey)) {
+                if (!glyphEnabled || GlyphNameplateManager.get().hasLiveRender(uuid)) {
+                    return;
+                }
+            }
+
+            if (glyphEnabled) {
+                NameplateManager.get().apply(uuid, store, ref, " ");
+                GlyphNameplateManager.get().apply(uuid, world, store, ref, resolvedColored);
+            } else {
+                NameplateManager.get().apply(uuid, store, ref, plainFallback);
+                GlyphNameplateManager.get().remove(uuid, world, store);
+            }
+
+            lastNameplateText.put(uuid, compareKey);
+
+            if (Settings.get().isEndlessLevelingNameplatesEnabled()) {
+                integrations.invalidateEndlessLevelingNameplate(uuid);
+            }
+
+        } catch (Throwable e) {
+            if (attempt < 3) {
+                world.execute(() -> applyNameplateNow(
+                        playerRef,
+                        world,
+                        uuid,
+                        compareKey,
+                        baseName,
+                        resolvedColored,
+                        plainFallback,
+                        glyphEnabled,
+                        attempt + 1
+                ));
+                return;
+            }
+
+            lastNameplateText.remove(uuid);
+            LOGGER.at(Level.WARNING).withCause(e)
+                    .log("[MysticNameTags] Failed to refresh nameplate for %s", baseName);
+        }
+    }
+
+    // ============================================================
+    // Unified nameplate context building
+    // ============================================================
+
+    @Nonnull
+    private NameplateTextResolver.Context buildNameplateContext(@Nullable PlayerRef playerRef,
+                                                                @Nullable String baseName,
+                                                                @Nullable UUID uuid) {
+        String safeName = (baseName == null || baseName.isBlank()) ? "Player" : baseName;
+
+        String rank = "";
+        String tag = "";
+        String endlessLevel = "";
+        String endlessPrestige = "";
+        String endlessRace = "";
+        String rpgLevel = "";
+        String ecoquestsRank = "";
+
+        if (uuid != null) {
+            String prefix = integrations.getPrimaryPrefix(uuid);
+            rank = prefix == null ? "" : prefix;
+
+            TagDefinition active = resolveActiveOrDefaultTag(uuid);
+            if (active != null && active.getDisplay() != null) {
+                tag = active.getDisplay();
+            }
+        }
+
+        if (playerRef != null) {
+            endlessLevel = resolveEndlessLevel(playerRef);
+            endlessPrestige = resolveEndlessPrestige(playerRef);
+            endlessRace = resolveEndlessRace(playerRef);
+            rpgLevel = resolveRpgLevel(playerRef);
+            ecoquestsRank = resolveEcoQuestsRank(playerRef);
+        }
+
+        return NameplateTextResolver.Context.builder()
+                .playerRef(playerRef)
+                .rank(rank)
+                .name(safeName)
+                .tag(tag)
+                .endlessLevel(endlessLevel)
+                .endlessPrestige(endlessPrestige)
+                .endlessRace(endlessRace)
+                .rpgLevel(rpgLevel)
+                .ecoquestsRank(ecoquestsRank)
+                .build();
+    }
+
+    /**
+     * Placeholder names here are examples.
+     * Replace them if your actual placeholder provider uses different IDs.
+     */
+    @Nonnull
+    private String resolveEndlessLevel(@Nonnull PlayerRef playerRef) {
+        UUID uuid = playerRef.getUuid();
+        if (uuid == null) {
+            return "";
+        }
+        return integrations.getEndlessLevel(uuid);
+    }
+
+    @Nonnull
+    private String resolveEndlessPrestige(@Nonnull PlayerRef playerRef) {
+        UUID uuid = playerRef.getUuid();
+        if (uuid == null) {
+            return "";
+        }
+        return integrations.getEndlessPrestige(uuid);
+    }
+
+    @Nonnull
+    private String resolveEndlessRace(@Nonnull PlayerRef playerRef) {
+        UUID uuid = playerRef.getUuid();
+        if (uuid == null) {
+            return "";
+        }
+        return integrations.getEndlessRace(uuid);
+    }
+
+    @Nonnull
+    private String resolveRpgLevel(@Nonnull PlayerRef playerRef) {
+        return integrations.getRpgLevel(playerRef);
+    }
+
+    @Nonnull
+    private String resolveEcoQuestsRank(@Nonnull PlayerRef playerRef) {
+        UUID uuid = playerRef.getUuid();
+        if (uuid == null) {
+            return "E";
+        }
+        return integrations.getEcoQuestsRank(uuid);
     }
 }
