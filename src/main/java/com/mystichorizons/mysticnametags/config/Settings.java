@@ -2,6 +2,7 @@ package com.mystichorizons.mysticnametags.config;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.hypixel.hytale.logger.HytaleLogger;
@@ -16,7 +17,6 @@ import java.io.FileWriter;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -52,7 +52,7 @@ public final class Settings {
 
     // MySQL options
     private String mysqlHost = "localhost";
-    private int    mysqlPort = 3306;
+    private int mysqlPort = 3306;
     private String mysqlDatabase = "mysticnametags";
     private String mysqlUser = "root";
     private String mysqlPassword = "password";
@@ -133,8 +133,18 @@ public final class Settings {
     private boolean experimentalGlyphNameplatesEnabled = false;
     private int experimentalGlyphMaxChars = 32;
     private int experimentalGlyphUpdateTicks = 10; // 10 ticks -> 500ms
-    private float experimentalGlyphRenderDistance = 24.0f;
     private int experimentalGlyphMaxEntitiesPerPlayer = 40;
+
+    // Glyph billboard optimization / tuning
+    private double experimentalGlyphViewerActivationDistance = 12.0d;
+    private double experimentalGlyphViewerDropDistance = 14.0d;
+    private int experimentalGlyphViewerRefreshActiveMs = 25;
+    private int experimentalGlyphViewerRefreshIdleMs = 500;
+    private int experimentalGlyphIdleFollowIntervalMs = 500;
+    private int experimentalGlyphRotationSyncIntervalMs = 25;
+    private int experimentalGlyphMaxLines = 2;
+    private int experimentalGlyphMaxCharsPerLine = 32;
+    private double experimentalGlyphLineSpacing = 0.30d;
 
     // ---------------------------------------------------------------------
 
@@ -159,7 +169,6 @@ public final class Settings {
         File file = getFile();
 
         if (!file.exists()) {
-            // First run – defaults + auto-detection
             applyAutoPlaceholderDetection(true);
             dirty = true;
             saveIfDirty();
@@ -170,20 +179,20 @@ public final class Settings {
             Settings loaded = GSON.fromJson(reader, Settings.class);
             if (loaded != null) {
                 // Core
-                this.nameplateFormat  = nonBlankOr(loaded.nameplateFormat, this.nameplateFormat);
+                this.nameplateFormat = nonBlankOr(loaded.nameplateFormat, this.nameplateFormat);
                 this.stripExtraSpaces = loaded.stripExtraSpaces;
-                this.language         = nonBlankOr(loaded.language, this.language);
-                this.tagDelaysecs     = Math.max(0, loaded.tagDelaysecs);
+                this.language = nonBlankOr(loaded.language, this.language);
+                this.tagDelaysecs = Math.max(0, loaded.tagDelaysecs);
 
                 // Storage
                 this.storageBackend = nonBlankOr(loaded.storageBackend, this.storageBackend);
-                this.sqliteFile     = nonBlankOr(loaded.sqliteFile, this.sqliteFile);
+                this.sqliteFile = nonBlankOr(loaded.sqliteFile, this.sqliteFile);
 
-                this.mysqlHost      = nonBlankOr(loaded.mysqlHost, this.mysqlHost);
-                this.mysqlPort      = (loaded.mysqlPort <= 0 ? this.mysqlPort : loaded.mysqlPort);
-                this.mysqlDatabase  = nonBlankOr(loaded.mysqlDatabase, this.mysqlDatabase);
-                this.mysqlUser      = nonBlankOr(loaded.mysqlUser, this.mysqlUser);
-                this.mysqlPassword  = (loaded.mysqlPassword == null ? this.mysqlPassword : loaded.mysqlPassword);
+                this.mysqlHost = nonBlankOr(loaded.mysqlHost, this.mysqlHost);
+                this.mysqlPort = (loaded.mysqlPort <= 0 ? this.mysqlPort : loaded.mysqlPort);
+                this.mysqlDatabase = nonBlankOr(loaded.mysqlDatabase, this.mysqlDatabase);
+                this.mysqlUser = nonBlankOr(loaded.mysqlUser, this.mysqlUser);
+                this.mysqlPassword = (loaded.mysqlPassword == null ? this.mysqlPassword : loaded.mysqlPassword);
 
                 // Playtime
                 this.playtimeProvider = nonBlankOr(loaded.playtimeProvider, this.playtimeProvider);
@@ -191,24 +200,20 @@ public final class Settings {
                 // Nameplates
                 this.nameplatesEnabled = loaded.nameplatesEnabled;
                 this.defaultTagEnabled = loaded.defaultTagEnabled;
-                this.defaultTagId      = nonBlankOr(loaded.defaultTagId, this.defaultTagId);
+                this.defaultTagId = nonBlankOr(loaded.defaultTagId, this.defaultTagId);
 
                 this.endlessLevelingNameplatesEnabled = loaded.endlessLevelingNameplatesEnabled;
-                this.endlessRaceDisplay               = loaded.endlessRaceDisplay;
-                this.endlessPrestigeDisplay           = loaded.endlessPrestigeDisplay;
-                this.endlessPrestigePrefix            = nonBlankOr(loaded.endlessPrestigePrefix, this.endlessPrestigePrefix);
+                this.endlessRaceDisplay = loaded.endlessRaceDisplay;
+                this.endlessPrestigeDisplay = loaded.endlessPrestigeDisplay;
+                this.endlessPrestigePrefix = nonBlankOr(loaded.endlessPrestigePrefix, this.endlessPrestigePrefix);
 
-                // Placeholder toggles + auto flags (new fields default to true if missing)
-                this.wiFlowPlaceholdersEnabled   = loaded.wiFlowPlaceholdersEnabled;
+                // Placeholder toggles + auto flags
+                this.wiFlowPlaceholdersEnabled = loaded.wiFlowPlaceholdersEnabled;
                 this.helpchPlaceholderApiEnabled = loaded.helpchPlaceholderApiEnabled;
 
-                this.wiFlowPlaceholdersAutoDetect =
-                        loaded.wiFlowPlaceholdersAutoDetect; // default false if missing in very old? handled below
-                this.helpchPlaceholderApiAutoDetect =
-                        loaded.helpchPlaceholderApiAutoDetect;
+                this.wiFlowPlaceholdersAutoDetect = loaded.wiFlowPlaceholdersAutoDetect;
+                this.helpchPlaceholderApiAutoDetect = loaded.helpchPlaceholderApiAutoDetect;
 
-                // If config predates these flags, Gson will deserialize them as false.
-                // We want "auto" to be the default for older configs.
                 if (!hasKeyInJson(file, "wiFlowPlaceholdersAutoDetect")) {
                     this.wiFlowPlaceholdersAutoDetect = true;
                     dirty = true;
@@ -219,25 +224,33 @@ public final class Settings {
                 }
 
                 // Economy & permissions
-                this.economySystemEnabled   = loaded.economySystemEnabled;
-                this.useCoinSystem          = loaded.useCoinSystem;
+                this.economySystemEnabled = loaded.economySystemEnabled;
+                this.useCoinSystem = loaded.useCoinSystem;
                 this.usePhysicalCoinEconomy = loaded.usePhysicalCoinEconomy;
-                this.fullPermissionGate     = loaded.fullPermissionGate;
-                this.permissionGate         = loaded.permissionGate;
+                this.fullPermissionGate = loaded.fullPermissionGate;
+                this.permissionGate = loaded.permissionGate;
 
                 // RPG
                 this.rpgLevelingNameplatesEnabled = loaded.rpgLevelingNameplatesEnabled;
-                this.rpgLevelingRefreshSeconds    = loaded.rpgLevelingRefreshSeconds;
+                this.rpgLevelingRefreshSeconds = loaded.rpgLevelingRefreshSeconds;
 
                 // Commands
                 this.ownedTagsCommandEnabled = loaded.ownedTagsCommandEnabled;
 
                 // Glyph
                 this.experimentalGlyphNameplatesEnabled = loaded.experimentalGlyphNameplatesEnabled;
-                this.experimentalGlyphMaxChars          = loaded.experimentalGlyphMaxChars;
-                this.experimentalGlyphUpdateTicks       = loaded.experimentalGlyphUpdateTicks;
-                this.experimentalGlyphRenderDistance    = loaded.experimentalGlyphRenderDistance;
+                this.experimentalGlyphMaxChars = loaded.experimentalGlyphMaxChars;
+                this.experimentalGlyphUpdateTicks = loaded.experimentalGlyphUpdateTicks;
                 this.experimentalGlyphMaxEntitiesPerPlayer = loaded.experimentalGlyphMaxEntitiesPerPlayer;
+                this.experimentalGlyphViewerActivationDistance = loaded.experimentalGlyphViewerActivationDistance;
+                this.experimentalGlyphViewerDropDistance = loaded.experimentalGlyphViewerDropDistance;
+                this.experimentalGlyphViewerRefreshActiveMs = loaded.experimentalGlyphViewerRefreshActiveMs;
+                this.experimentalGlyphViewerRefreshIdleMs = loaded.experimentalGlyphViewerRefreshIdleMs;
+                this.experimentalGlyphIdleFollowIntervalMs = loaded.experimentalGlyphIdleFollowIntervalMs;
+                this.experimentalGlyphRotationSyncIntervalMs = loaded.experimentalGlyphRotationSyncIntervalMs;
+                this.experimentalGlyphMaxLines = loaded.experimentalGlyphMaxLines;
+                this.experimentalGlyphMaxCharsPerLine = loaded.experimentalGlyphMaxCharsPerLine;
+                this.experimentalGlyphLineSpacing = loaded.experimentalGlyphLineSpacing;
             }
         } catch (Exception e) {
             LOGGER.at(Level.WARNING).withCause(e)
@@ -245,10 +258,7 @@ public final class Settings {
             dirty = true;
         }
 
-        // After loading, auto-enable/disable placeholder backends
         applyAutoPlaceholderDetection(false);
-
-        // Clamp/normalize any values (may mark dirty)
         normalizeAndClamp();
 
         saveToDisk();
@@ -256,7 +266,6 @@ public final class Settings {
     }
 
     private void normalizeAndClamp() {
-        // normalize string fields
         String before;
 
         before = this.storageBackend;
@@ -287,7 +296,6 @@ public final class Settings {
         this.endlessPrestigePrefix = nonBlankOr(this.endlessPrestigePrefix, "P");
         if (!safeEquals(before, this.endlessPrestigePrefix)) dirty = true;
 
-        // clamps
         int oldDelay = this.tagDelaysecs;
         this.tagDelaysecs = Math.max(0, this.tagDelaysecs);
         if (oldDelay != this.tagDelaysecs) dirty = true;
@@ -304,19 +312,64 @@ public final class Settings {
         this.experimentalGlyphUpdateTicks = Math.max(1, this.experimentalGlyphUpdateTicks);
         if (oldGlyphTicks != this.experimentalGlyphUpdateTicks) dirty = true;
 
-        float oldDist = this.experimentalGlyphRenderDistance;
-        this.experimentalGlyphRenderDistance = Math.max(8f, this.experimentalGlyphRenderDistance);
-        if (Float.compare(oldDist, this.experimentalGlyphRenderDistance) != 0) dirty = true;
-
-        float oldMax = this.experimentalGlyphMaxEntitiesPerPlayer;
+        int oldMax = this.experimentalGlyphMaxEntitiesPerPlayer;
         this.experimentalGlyphMaxEntitiesPerPlayer = Math.max(8, this.experimentalGlyphMaxEntitiesPerPlayer);
-        if (Float.compare(oldMax, this.experimentalGlyphMaxEntitiesPerPlayer) !=0 ) dirty  = true;
+        if (oldMax != this.experimentalGlyphMaxEntitiesPerPlayer) dirty = true;
+
+        double oldViewerActivationDistance = this.experimentalGlyphViewerActivationDistance;
+        this.experimentalGlyphViewerActivationDistance = Math.max(2.0d, this.experimentalGlyphViewerActivationDistance);
+        if (Double.compare(oldViewerActivationDistance, this.experimentalGlyphViewerActivationDistance) != 0) dirty = true;
+
+        double oldViewerDropDistance = this.experimentalGlyphViewerDropDistance;
+        this.experimentalGlyphViewerDropDistance = Math.max(
+                this.experimentalGlyphViewerActivationDistance,
+                this.experimentalGlyphViewerDropDistance
+        );
+        if (Double.compare(oldViewerDropDistance, this.experimentalGlyphViewerDropDistance) != 0) dirty = true;
+
+        int oldViewerRefreshActiveMs = this.experimentalGlyphViewerRefreshActiveMs;
+        this.experimentalGlyphViewerRefreshActiveMs = Math.max(1, this.experimentalGlyphViewerRefreshActiveMs);
+        if (oldViewerRefreshActiveMs != this.experimentalGlyphViewerRefreshActiveMs) dirty = true;
+
+        int oldViewerRefreshIdleMs = this.experimentalGlyphViewerRefreshIdleMs;
+        this.experimentalGlyphViewerRefreshIdleMs = Math.max(50, this.experimentalGlyphViewerRefreshIdleMs);
+        if (oldViewerRefreshIdleMs != this.experimentalGlyphViewerRefreshIdleMs) dirty = true;
+
+        int oldIdleFollowMs = this.experimentalGlyphIdleFollowIntervalMs;
+        this.experimentalGlyphIdleFollowIntervalMs = Math.max(50, this.experimentalGlyphIdleFollowIntervalMs);
+        if (oldIdleFollowMs != this.experimentalGlyphIdleFollowIntervalMs) dirty = true;
+
+        int oldRotationSyncMs = this.experimentalGlyphRotationSyncIntervalMs;
+        this.experimentalGlyphRotationSyncIntervalMs = Math.max(1, this.experimentalGlyphRotationSyncIntervalMs);
+        if (oldRotationSyncMs != this.experimentalGlyphRotationSyncIntervalMs) dirty = true;
+
+        int oldGlyphMaxLines = this.experimentalGlyphMaxLines;
+        this.experimentalGlyphMaxLines = Math.max(1, this.experimentalGlyphMaxLines);
+        if (oldGlyphMaxLines != this.experimentalGlyphMaxLines) dirty = true;
+
+        int oldGlyphCharsPerLine = this.experimentalGlyphMaxCharsPerLine;
+        this.experimentalGlyphMaxCharsPerLine = Math.max(1, this.experimentalGlyphMaxCharsPerLine);
+        if (oldGlyphCharsPerLine != this.experimentalGlyphMaxCharsPerLine) dirty = true;
+
+        double oldGlyphLineSpacing = this.experimentalGlyphLineSpacing;
+        this.experimentalGlyphLineSpacing = Math.max(0.05d, this.experimentalGlyphLineSpacing);
+        if (Double.compare(oldGlyphLineSpacing, this.experimentalGlyphLineSpacing) != 0) dirty = true;
     }
 
     private void saveIfDirty() {
         if (!dirty) return;
         saveToDisk();
         dirty = false;
+    }
+
+    private static void addInfoBlock(@Nonnull JsonObject out,
+                                     @Nonnull String key,
+                                     @Nonnull String... lines) {
+        JsonArray arr = new JsonArray();
+        for (String line : lines) {
+            arr.add(line);
+        }
+        out.add(key, arr);
     }
 
     /**
@@ -328,7 +381,6 @@ public final class Settings {
             JsonObject root = GSON.toJsonTree(this).getAsJsonObject();
             JsonObject out = new JsonObject();
 
-            // Track copied keys so we can preserve unknown future keys
             Set<String> copied = new HashSet<>();
 
             Consumer<String> copy = (key) -> {
@@ -340,26 +392,22 @@ public final class Settings {
 
             out.addProperty("_", "MysticNameTags settings.json – edit & reload/restart to apply changes.");
 
-            // ------------------------------------------------------------------
-            // 1) Core
-            // ------------------------------------------------------------------
-            out.addProperty("__core",
-                    "Core nameplate settings.\n" +
-                            "nameplateFormat = tokens: {rank}, {name}, {tag}\n" +
-                            "stripExtraSpaces = condense multiple spaces\n" +
-                            "language = locale bundle (e.g. en_US)\n" +
-                            "tagDelaysecs = cooldown (seconds) before equipping a DIFFERENT tag again (0 = off)");
+            addInfoBlock(out, "__core",
+                    "Core nameplate settings.",
+                    "nameplateFormat = tokens: {rank}, {name}, {tag}, {endless_level}, {endless_prestige}, {endless_race}, {rpg_level}, {ecoquests_rank}",
+                    "stripExtraSpaces = condense multiple spaces",
+                    "language = locale bundle (e.g. en_US)",
+                    "tagDelaysecs = cooldown (seconds) before equipping a DIFFERENT tag again (0 = off)"
+            );
             copy.accept("nameplateFormat");
             copy.accept("stripExtraSpaces");
             copy.accept("language");
             copy.accept("tagDelaysecs");
 
-            // ------------------------------------------------------------------
-            // 2) Storage
-            // ------------------------------------------------------------------
-            out.addProperty("__storage",
-                    "Storage backend for tag ownership data.\n" +
-                            "storageBackend = FILE / SQLITE / MYSQL");
+            addInfoBlock(out, "__storage",
+                    "Storage backend for tag ownership data.",
+                    "storageBackend = FILE / SQLITE / MYSQL"
+            );
             copy.accept("storageBackend");
             copy.accept("sqliteFile");
             copy.accept("mysqlHost");
@@ -368,85 +416,85 @@ public final class Settings {
             copy.accept("mysqlUser");
             copy.accept("mysqlPassword");
 
-            // ------------------------------------------------------------------
-            // 3) Nameplates
-            // ------------------------------------------------------------------
-            out.addProperty("__nameplates",
-                    "Nameplate behavior.\n" +
-                            "nameplatesEnabled = master toggle\n" +
-                            "defaultTagEnabled = use defaultTagId when no tag equipped\n" +
-                            "defaultTagId must match tags.json id");
+            addInfoBlock(out, "__nameplates",
+                    "Nameplate behavior.",
+                    "nameplatesEnabled = master toggle",
+                    "defaultTagEnabled = use defaultTagId when no tag equipped",
+                    "defaultTagId must match tags.json id"
+            );
             copy.accept("nameplatesEnabled");
             copy.accept("defaultTagEnabled");
             copy.accept("defaultTagId");
 
-            // ------------------------------------------------------------------
-            // 4) EndlessLeveling
-            // ------------------------------------------------------------------
-            out.addProperty("__endless",
-                    "EndlessLeveling integration toggles.");
+            addInfoBlock(out, "__endless",
+                    "EndlessLeveling integration toggles."
+            );
             copy.accept("endlessLevelingNameplatesEnabled");
             copy.accept("endlessRaceDisplay");
             copy.accept("endlessPrestigeDisplay");
             copy.accept("endlessPrestigePrefix");
 
-            // ------------------------------------------------------------------
-            // 5) Placeholders
-            // ------------------------------------------------------------------
-            out.addProperty("__placeholders",
-                    "Placeholder APIs.\n" +
-                            "Auto-detect flags control whether detection can override the enabled flags.");
+            addInfoBlock(out, "__placeholders",
+                    "Placeholder APIs.",
+                    "Auto-detect flags control whether detection can override the enabled flags."
+            );
             copy.accept("wiFlowPlaceholdersAutoDetect");
             copy.accept("wiFlowPlaceholdersEnabled");
             copy.accept("helpchPlaceholderApiAutoDetect");
             copy.accept("helpchPlaceholderApiEnabled");
 
-            // ------------------------------------------------------------------
-            // 6) Economy / permissions
-            // ------------------------------------------------------------------
-            out.addProperty("__economy",
-                    "Tag purchasing & permission gating.\n" +
-                            "fullPermissionGate = permission node fully gates tags (can hide/block access).\n" +
-                            "permissionGate = tag remains visible, but permission node is required to unlock/equip.");
+            addInfoBlock(out, "__economy",
+                    "Tag purchasing & permission gating.",
+                    "fullPermissionGate = permission node fully gates tags (can hide/block access).",
+                    "permissionGate = tag remains visible, but permission node is required to unlock/equip."
+            );
             copy.accept("economySystemEnabled");
             copy.accept("useCoinSystem");
             copy.accept("usePhysicalCoinEconomy");
             copy.accept("fullPermissionGate");
             copy.accept("permissionGate");
 
-            // ------------------------------------------------------------------
-            // 7) RPGLeveling
-            // ------------------------------------------------------------------
-            out.addProperty("__rpg",
-                    "RPGLeveling integration.");
+            addInfoBlock(out, "__rpg",
+                    "RPGLeveling integration."
+            );
             copy.accept("rpgLevelingNameplatesEnabled");
             copy.accept("rpgLevelingRefreshSeconds");
 
-            // ------------------------------------------------------------------
-            // 8) Playtime + commands
-            // ------------------------------------------------------------------
-            out.addProperty("__playtime",
-                    "Playtime provider + extra commands.\n" +
-                            "playtimeProvider = AUTO / INTERNAL / ZIB_PLAYTIME / NONE");
+            addInfoBlock(out, "__playtime",
+                    "Playtime provider + extra commands.",
+                    "playtimeProvider = AUTO / INTERNAL / ZIB_PLAYTIME / NONE"
+            );
             copy.accept("playtimeProvider");
             copy.accept("ownedTagsCommandEnabled");
 
-            // ------------------------------------------------------------------
-            // 9) Experimental glyph nameplates
-            // ------------------------------------------------------------------
-            out.addProperty("__experimental_glyph_nameplates",
-                    "⚠ EXPERIMENTAL ⚠\n" +
-                            "Glyph nameplates spawn an entity per character (expensive).\n" +
-                            "Keep disabled unless testing with low player counts.");
+            addInfoBlock(out, "__experimental_glyph_nameplates",
+                    "⚠ EXPERIMENTAL ⚠",
+                    "Glyph nameplates spawn an entity per character (expensive).",
+                    "Keep disabled unless testing with low player counts.",
+                    "experimentalGlyphViewerActivationDistance = activate nearest-viewer billboard inside this radius",
+                    "experimentalGlyphViewerDropDistance = keep current viewer until they leave this larger radius",
+                    "experimentalGlyphViewerRefreshActiveMs = viewer scan cadence while active",
+                    "experimentalGlyphViewerRefreshIdleMs = viewer scan cadence while idle",
+                    "experimentalGlyphIdleFollowIntervalMs = follow cadence when no valid nearby viewer exists",
+                    "experimentalGlyphRotationSyncIntervalMs = child glyph yaw sync cadence",
+                    "experimentalGlyphMaxLines = maximum number of rendered lines",
+                    "experimentalGlyphMaxCharsPerLine = visible glyph chars per line",
+                    "experimentalGlyphLineSpacing = vertical spacing between line anchors"
+            );
             copy.accept("experimentalGlyphNameplatesEnabled");
             copy.accept("experimentalGlyphMaxChars");
             copy.accept("experimentalGlyphUpdateTicks");
-            copy.accept("experimentalGlyphRenderDistance");
             copy.accept("experimentalGlyphMaxEntitiesPerPlayer");
+            copy.accept("experimentalGlyphViewerActivationDistance");
+            copy.accept("experimentalGlyphViewerDropDistance");
+            copy.accept("experimentalGlyphViewerRefreshActiveMs");
+            copy.accept("experimentalGlyphViewerRefreshIdleMs");
+            copy.accept("experimentalGlyphIdleFollowIntervalMs");
+            copy.accept("experimentalGlyphRotationSyncIntervalMs");
+            copy.accept("experimentalGlyphMaxLines");
+            copy.accept("experimentalGlyphMaxCharsPerLine");
+            copy.accept("experimentalGlyphLineSpacing");
 
-            // ------------------------------------------------------------------
-            // Preserve unknown / future fields
-            // ------------------------------------------------------------------
             JsonObject other = new JsonObject();
             for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
                 String key = entry.getKey();
@@ -454,8 +502,9 @@ public final class Settings {
                 if (copied.contains(key)) continue;
                 other.add(key, entry.getValue());
             }
+
             if (!other.entrySet().isEmpty()) {
-                out.addProperty("__other", "=== Other / future settings ===");
+                addInfoBlock(out, "__other", "=== Other / future settings ===");
                 for (Map.Entry<String, JsonElement> e : other.entrySet()) {
                     out.add(e.getKey(), e.getValue());
                 }
@@ -476,7 +525,6 @@ public final class Settings {
         boolean wiFlowPresent = classPresent("com.wiflow.placeholderapi.WiFlowPlaceholderAPI");
         boolean helpchPresent = classPresent("at.helpch.placeholderapi.PlaceholderAPI");
 
-        // Only auto-toggle if auto-detect is enabled OR it's the first run (defaults)
         if (firstRun || this.wiFlowPlaceholdersAutoDetect) {
             if (this.wiFlowPlaceholdersEnabled != wiFlowPresent) {
                 this.wiFlowPlaceholdersEnabled = wiFlowPresent;
@@ -491,7 +539,6 @@ public final class Settings {
             }
         }
 
-        // Log state
         LOGGER.at(Level.INFO).log("[MysticNameTags] WiFlowPlaceholderAPI present=" + wiFlowPresent
                 + " | enabled=" + wiFlowPlaceholdersEnabled
                 + " | autoDetect=" + wiFlowPlaceholdersAutoDetect);
@@ -510,10 +557,6 @@ public final class Settings {
         }
     }
 
-    /**
-     * Detect if a JSON root key exists without fully modeling it.
-     * Used to treat missing new fields as "default true" behavior.
-     */
     private static boolean hasKeyInJson(File file, String key) {
         try (FileReader r = new FileReader(file)) {
             JsonObject obj = GSON.fromJson(r, JsonObject.class);
@@ -537,22 +580,15 @@ public final class Settings {
     // Nameplate formatting
     // ---------------------------------------------------------------------
 
-    public String formatNameplateRaw(String rank, String name, String tag) {
-        String result = nameplateFormat
-                .replace("{rank}", rank == null ? "" : rank)
-                .replace("{name}", name == null ? "" : name)
-                .replace("{tag}",  tag == null ? "" : tag);
-
-        if (stripExtraSpaces) {
-            result = result.replaceAll("\\s+", " ").trim();
-        }
-
-        return result;
+    @Nonnull
+    public String getNameplateFormatRaw() {
+        return (nameplateFormat == null || nameplateFormat.isBlank())
+                ? "{rank} {name} {tag}"
+                : nameplateFormat;
     }
 
-    public String formatNameplate(String rank, String name, String tag) {
-        String raw = formatNameplateRaw(rank, name, tag);
-        return ColorFormatter.colorize(raw);
+    public boolean isStripExtraSpacesEnabled() {
+        return stripExtraSpaces;
     }
 
     // ---------------------------------------------------------------------
@@ -687,11 +723,43 @@ public final class Settings {
         return Math.max(1, experimentalGlyphUpdateTicks);
     }
 
-    public float getExperimentalGlyphRenderDistance() {
-        return Math.max(8f, experimentalGlyphRenderDistance);
-    }
-
     public int getExperimentalGlyphMaxEntitiesPerPlayer() {
         return Math.max(8, experimentalGlyphMaxEntitiesPerPlayer);
+    }
+
+    public double getExperimentalGlyphViewerActivationDistance() {
+        return Math.max(2.0d, experimentalGlyphViewerActivationDistance);
+    }
+
+    public double getExperimentalGlyphViewerDropDistance() {
+        return Math.max(getExperimentalGlyphViewerActivationDistance(), experimentalGlyphViewerDropDistance);
+    }
+
+    public int getExperimentalGlyphViewerRefreshActiveMs() {
+        return Math.max(1, experimentalGlyphViewerRefreshActiveMs);
+    }
+
+    public int getExperimentalGlyphViewerRefreshIdleMs() {
+        return Math.max(50, experimentalGlyphViewerRefreshIdleMs);
+    }
+
+    public int getExperimentalGlyphIdleFollowIntervalMs() {
+        return Math.max(50, experimentalGlyphIdleFollowIntervalMs);
+    }
+
+    public int getExperimentalGlyphRotationSyncIntervalMs() {
+        return Math.max(1, experimentalGlyphRotationSyncIntervalMs);
+    }
+
+    public int getExperimentalGlyphMaxLines() {
+        return Math.max(1, experimentalGlyphMaxLines);
+    }
+
+    public int getExperimentalGlyphMaxCharsPerLine() {
+        return Math.max(1, experimentalGlyphMaxCharsPerLine);
+    }
+
+    public double getExperimentalGlyphLineSpacing() {
+        return Math.max(0.05d, experimentalGlyphLineSpacing);
     }
 }
