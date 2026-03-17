@@ -440,7 +440,8 @@ public final class GlyphNameplateManager {
 
                 spawnAttemptedForVisibleGlyph = true;
 
-                int rgbQuant = TintPaletteCompat.quantizeRgb(cc.color);
+                Color dimmed = scaleColor(cc.color, 0.60d);
+                int rgbQuant = TintPaletteCompat.quantizeRgb(dimmed);
 
                 Vector3d gPos = new Vector3d(anchorPos.getX(), anchorPos.getY(), anchorPos.getZ());
                 Vector3f gRot = new Vector3f(0f, 0f, 0f);
@@ -1240,5 +1241,19 @@ public final class GlyphNameplateManager {
             int b = LUT[c.getBlue() & 0xFF];
             return ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
         }
+    }
+
+    private static Color scaleColor(Color color, double factor) {
+        factor = Math.max(0.0d, Math.min(1.0d, factor));
+
+        int r = (int) Math.round(color.getRed() * factor);
+        int g = (int) Math.round(color.getGreen() * factor);
+        int b = (int) Math.round(color.getBlue() * factor);
+
+        return new Color(
+                Math.max(0, Math.min(255, r)),
+                Math.max(0, Math.min(255, g)),
+                Math.max(0, Math.min(255, b))
+        );
     }
 }
