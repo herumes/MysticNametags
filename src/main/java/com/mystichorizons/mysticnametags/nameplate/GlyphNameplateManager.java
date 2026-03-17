@@ -440,7 +440,7 @@ public final class GlyphNameplateManager {
 
                 spawnAttemptedForVisibleGlyph = true;
 
-                Color dimmed = scaleColor(cc.color, 0.60d);
+                Color dimmed = scaleColor(cc.color, settings.getExperimentalGlyphTintStrength());
                 int rgbQuant = TintPaletteCompat.quantizeRgb(dimmed);
 
                 Vector3d gPos = new Vector3d(anchorPos.getX(), anchorPos.getY(), anchorPos.getZ());
@@ -1243,7 +1243,7 @@ public final class GlyphNameplateManager {
         }
     }
 
-    private static Color scaleColor(Color color, double factor) {
+    private static Color scaleColor(@Nonnull Color color, double factor) {
         factor = Math.max(0.0d, Math.min(1.0d, factor));
 
         int r = (int) Math.round(color.getRed() * factor);

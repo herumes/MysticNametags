@@ -151,6 +151,7 @@ public final class Settings {
     private int experimentalGlyphMaxLines = 2;
     private int experimentalGlyphMaxCharsPerLine = 32;
     private double experimentalGlyphLineSpacing = 0.30d;
+    private double experimentalGlyphTintStrength = 0.65d;
 
     // ---------------------------------------------------------------------
 
@@ -259,6 +260,7 @@ public final class Settings {
                 this.experimentalGlyphMaxLines = loaded.experimentalGlyphMaxLines;
                 this.experimentalGlyphMaxCharsPerLine = loaded.experimentalGlyphMaxCharsPerLine;
                 this.experimentalGlyphLineSpacing = loaded.experimentalGlyphLineSpacing;
+                this.experimentalGlyphTintStrength = loaded.experimentalGlyphTintStrength;
             }
         } catch (Exception e) {
             LOGGER.at(Level.WARNING).withCause(e)
@@ -362,6 +364,10 @@ public final class Settings {
         double oldGlyphLineSpacing = this.experimentalGlyphLineSpacing;
         this.experimentalGlyphLineSpacing = Math.max(0.05d, this.experimentalGlyphLineSpacing);
         if (Double.compare(oldGlyphLineSpacing, this.experimentalGlyphLineSpacing) != 0) dirty = true;
+
+        double oldGlyphTintStrength = this.experimentalGlyphTintStrength;
+        this.experimentalGlyphTintStrength = Math.max(0.0d, Math.min(1.0d, this.experimentalGlyphTintStrength));
+        if (Double.compare(oldGlyphTintStrength, this.experimentalGlyphTintStrength) != 0) dirty = true;
     }
 
     private void saveIfDirty() {
@@ -489,7 +495,8 @@ public final class Settings {
                     "experimentalGlyphRotationSyncIntervalMs = child glyph yaw sync cadence",
                     "experimentalGlyphMaxLines = maximum number of rendered lines",
                     "experimentalGlyphMaxCharsPerLine = visible glyph chars per line",
-                    "experimentalGlyphLineSpacing = vertical spacing between line anchors"
+                    "experimentalGlyphLineSpacing = vertical spacing between line anchors",
+                    "experimentalGlyphTintStrength = glyph color brightness multiplier (0.0 - 1.0, lower = dimmer/less glow)"
             );
             copy.accept("experimentalGlyphNameplatesEnabled");
             copy.accept("experimentalGlyphMaxChars");
@@ -504,6 +511,7 @@ public final class Settings {
             copy.accept("experimentalGlyphMaxLines");
             copy.accept("experimentalGlyphMaxCharsPerLine");
             copy.accept("experimentalGlyphLineSpacing");
+            copy.accept("experimentalGlyphTintStrength");
 
             JsonObject other = new JsonObject();
             for (Map.Entry<String, JsonElement> entry : root.entrySet()) {
@@ -779,5 +787,9 @@ public final class Settings {
 
     public double getExperimentalGlyphLineSpacing() {
         return Math.max(0.05d, experimentalGlyphLineSpacing);
+    }
+
+    public double getExperimentalGlyphTintStrength() {
+        return Math.max(0.0d, Math.min(1.0d, experimentalGlyphTintStrength));
     }
 }
