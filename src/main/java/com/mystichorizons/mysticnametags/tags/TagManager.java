@@ -1328,6 +1328,19 @@ public class TagManager {
         }
     }
 
+    private void forceRefreshIfOnline(@Nonnull UUID uuid) {
+        PlayerRef ref = onlinePlayers.get(uuid);
+        World world = onlineWorlds.get(uuid);
+        if (ref != null && world != null) {
+            try {
+                forceRefreshNameplate(ref, world);
+            } catch (Throwable t) {
+                LOGGER.at(Level.WARNING).withCause(t)
+                        .log("[MysticNameTags] Failed to force refresh nameplate after change for " + uuid);
+            }
+        }
+    }
+
     public void onExternalNameplateDataChanged(@Nonnull UUID uuid) {
         clearCanUseCache(uuid);
         forgetNameplate(uuid);
@@ -1450,6 +1463,114 @@ public class TagManager {
             lastNameplateText.remove(uuid);
             LOGGER.at(Level.WARNING).withCause(e)
                     .log("[MysticNameTags] Failed to refresh nameplate for %s", baseName);
+        }
+    }
+
+    public void forceRefreshNameplate(@Nonnull PlayerRef playerRef,
+                                      @Nonnull World world) {
+
+        UUID uuid = playerRef.getUuid();
+        String baseName = playerRef.getUsername();
+        if (baseName == null || baseName.isBlank()) {
+            baseName = "Player";
+        }
+
+        lastNameplateText.remove(uuid);
+
+        Settings settings = Settings.get();
+
+        NameplateTextResolver.Context ctx = buildNameplateContext(playerRef, baseName, uuid);
+        NameplateTextResolver.ResolvedNameplateText resolved = NameplateTextResolver.resolve(ctx);
+
+        String resolvedColored = resolved.getColored();
+        String plainFallback = resolved.getPlain();
+
+        boolean glyphEnabled = settings.isExperimentalGlyphNameplatesEnabled();
+        String compareKey = glyphEnabled ? resolvedColored : plainFallback;
+
+        String finalBaseName = baseName;
+        String finalResolvedColored = resolvedColored;
+        String finalPlainFallback = plainFallback;
+
+        world.execute(() -> forceApplyNameplateNow(
+                playerRef,
+                world,
+                uuid,
+                compareKey,
+                finalBaseName,
+                finalResolvedColored,
+                finalPlainFallback,
+                glyphEnabled,
+                0
+        ));
+    }
+
+    private void forceApplyNameplateNow(@Nonnull PlayerRef playerRef,
+                                        @Nonnull World world,
+                                        @Nonnull UUID uuid,
+                                        @Nonnull String compareKey,
+                                        @Nonnull String baseName,
+                                        @Nonnull String resolvedColored,
+                                        @Nonnull String plainFallback,
+                                        boolean glyphEnabled,
+                                        int attempt) {
+        try {
+            EntityStore entityStore = world.getEntityStore();
+            Store<EntityStore> store = entityStore.getStore();
+
+            Ref<EntityStore> ref = playerRef.getReference();
+            if (ref == null || !ref.isValid()) {
+                if (attempt < 3) {
+                    world.execute(() -> forceApplyNameplateNow(
+                            playerRef,
+                            world,
+                            uuid,
+                            compareKey,
+                            baseName,
+                            resolvedColored,
+                            plainFallback,
+                            glyphEnabled,
+                            attempt + 1
+                    ));
+                } else {
+                    lastNameplateText.remove(uuid);
+                }
+                return;
+            }
+
+            if (glyphEnabled) {
+                NameplateManager.get().apply(uuid, store, ref, " ");
+                GlyphNameplateManager.get().apply(uuid, world, store, ref, resolvedColored);
+            } else {
+                GlyphNameplateManager.get().remove(uuid, world, store);
+                NameplateManager.get().apply(uuid, store, ref, plainFallback);
+            }
+
+            lastNameplateText.put(uuid, compareKey);
+
+            if (Settings.get().isEndlessLevelingNameplatesEnabled()) {
+                integrations.invalidateEndlessLevelingNameplate(uuid);
+            }
+
+        } catch (Throwable e) {
+            if (attempt < 3) {
+                world.execute(() -> forceApplyNameplateNow(
+                        playerRef,
+                        world,
+                        uuid,
+                        compareKey,
+                        baseName,
+                        resolvedColored,
+                        plainFallback,
+                        glyphEnabled,
+                        attempt + 1
+                ));
+                return;
+            }
+
+            lastNameplateText.remove(uuid);
+            LOGGER.at(Level.WARNING).withCause(e)
+                    .log("[MysticNameTags] Failed to force refresh nameplate for %s", baseName);
         }
     }
 
