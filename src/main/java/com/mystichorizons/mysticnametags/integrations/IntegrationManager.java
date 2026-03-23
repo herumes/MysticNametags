@@ -1,5 +1,6 @@
 package com.mystichorizons.mysticnametags.integrations;
 
+import com.airijko.endlessleveling.EndlessLeveling;
 import com.airijko.endlessleveling.data.PlayerData;
 import com.airijko.endlessleveling.managers.PlayerDataManager;
 import com.hypixel.hytale.component.Ref;
@@ -11,11 +12,15 @@ import com.hypixel.hytale.server.core.universe.world.storage.EntityStore;
 import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.integrations.economy.*;
 import com.mystichorizons.mysticnametags.integrations.ecoquests.EcoQuestsCompat;
+import com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingCompat;
 import com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingNameplateSystem;
 import com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingStatBridge;
 import com.mystichorizons.mysticnametags.integrations.permissions.*;
 import com.mystichorizons.mysticnametags.placeholders.HelpchPlaceholderHook;
 import com.mystichorizons.mysticnametags.playtime.PlaytimeService;
+import com.mystichorizons.mysticnametags.tags.TagManager;
+import net.luckperms.api.LuckPerms;
+import net.luckperms.api.LuckPermsProvider;
 import org.zuxaw.plugin.api.RPGLevelingAPI;
 
 import javax.annotation.Nonnull;
@@ -164,6 +169,26 @@ public class IntegrationManager {
             if (luckPermsSupport.isAvailable()) {
                 this.permissionsBackend = luckPermsSupport;
                 this.activePermissionBackend = PermissionBackendType.LUCKPERMS;
+
+                try {
+                    LuckPerms api = LuckPermsProvider.get();
+                    LuckPermsNameplateListener listener = new LuckPermsNameplateListener(
+                            api,
+                            uuid -> {
+                                try {
+                                    TagManager tags = TagManager.get();
+                                    if (tags != null) {
+                                        tags.onExternalNameplateDataChanged(uuid);
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                    );
+
+                    listener.register(com.mystichorizons.mysticnametags.MysticNameTagsPlugin.getInstance());
+                } catch (Throwable ignored) {
+                }
+
                 LOGGER.at(Level.INFO).log("[MysticNameTags] Using LuckPerms for permissions.");
                 return;
             } else {
@@ -950,22 +975,22 @@ public class IntegrationManager {
         return provider.getClass().getSimpleName();
     }
 
-    // TODO: REMOVE METHODS - Was moved to a better integration call
-    public boolean isItemRequirementHandlerAvailable() {
-        return itemRequirementHandler != null;
-    }
-
-    public boolean isStatProviderAvailable() {
-        return statProvider != null;
-    }
-
-    public boolean isEndlessLevelingNameplateAttached() {
-        return endlessNameplateSystem != null;
-    }
-
-    public boolean isCoinsAndMarketsAvailable() {
-        return coinsAndMarketsBackend != null && coinsAndMarketsBackend.isAvailable();
-    }
+//    // TODO: REMOVE METHODS - Was moved to a better integration call
+//    public boolean isItemRequirementHandlerAvailable() {
+//        return itemRequirementHandler != null;
+//    }
+//
+//    public boolean isStatProviderAvailable() {
+//        return statProvider != null;
+//    }
+//
+//    public boolean isEndlessLevelingNameplateAttached() {
+//        return endlessNameplateSystem != null;
+//    }
+//
+//    public boolean isCoinsAndMarketsAvailable() {
+//        return coinsAndMarketsBackend != null && coinsAndMarketsBackend.isAvailable();
+//    }
 
     @Nonnull
     public java.util.List<String> getAvailableLedgerBackendNames() {
@@ -984,27 +1009,6 @@ public class IntegrationManager {
         return java.util.Collections.unmodifiableList(names);
     }
 
-    @Nullable
-    private PlayerData getEndlessPlayerData(@Nonnull UUID uuid) {
-        try {
-            Class.forName("com.airijko.endlessleveling.EndlessLeveling");
-
-            com.airijko.endlessleveling.EndlessLeveling plugin =
-                    com.airijko.endlessleveling.EndlessLeveling.getInstance();
-            if (plugin == null) {
-                return null;
-            }
-
-            PlayerDataManager pdm = plugin.getPlayerDataManager();
-            if (pdm == null) {
-                return null;
-            }
-
-            return pdm.get(uuid);
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
 
     @Nonnull
     private String prettifyId(@Nullable String input) {
@@ -1045,13 +1049,7 @@ public class IntegrationManager {
             return "";
         }
 
-        PlayerData data = getEndlessPlayerData(uuid);
-        if (data == null) {
-            return "";
-        }
-
-        int level = Math.max(1, data.getLevel());
-        return String.valueOf(level);
+        return EndlessLevelingCompat.getLevel(uuid);
     }
 
     @Nonnull
@@ -1061,17 +1059,11 @@ public class IntegrationManager {
             return "";
         }
 
-        PlayerData data = getEndlessPlayerData(uuid);
-        if (data == null) {
-            return "";
-        }
-
-        int prestige = Math.max(0, data.getPrestigeLevel());
-        if (prestige <= 0) {
-            return "";
-        }
-
-        return s.getEndlessPrestigePrefix() + prestige;
+        return EndlessLevelingCompat.getPrestige(
+                uuid,
+                true,
+                s.getEndlessPrestigePrefix()
+        );
     }
 
     @Nonnull
@@ -1081,17 +1073,7 @@ public class IntegrationManager {
             return "";
         }
 
-        PlayerData data = getEndlessPlayerData(uuid);
-        if (data == null) {
-            return "";
-        }
-
-        String race = data.getRaceId();
-        if (race == null || race.isBlank()) {
-            race = PlayerData.DEFAULT_RACE_ID;
-        }
-
-        return race == null ? "" : race.trim();
+        return EndlessLevelingCompat.getRaceId(uuid);
     }
 
     @Nonnull
@@ -1101,12 +1083,7 @@ public class IntegrationManager {
             return "";
         }
 
-        PlayerData data = getEndlessPlayerData(uuid);
-        if (data == null) {
-            return "";
-        }
-
-        return prettifyId(data.getPrimaryClassId());
+        return prettifyId(EndlessLevelingCompat.getPrimaryClassId(uuid));
     }
 
     @Nonnull
@@ -1116,12 +1093,7 @@ public class IntegrationManager {
             return "";
         }
 
-        PlayerData data = getEndlessPlayerData(uuid);
-        if (data == null) {
-            return "";
-        }
-
-        return prettifyId(data.getSecondaryClassId());
+        return prettifyId(EndlessLevelingCompat.getSecondaryClassId(uuid));
     }
 
     @Nonnull

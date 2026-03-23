@@ -1,7 +1,5 @@
 package com.mystichorizons.mysticnametags.integrations.endlessleveling;
 
-import com.airijko.endlessleveling.data.PlayerData;
-import com.airijko.endlessleveling.managers.PlayerDataManager;
 import com.hypixel.hytale.component.Ref;
 import com.hypixel.hytale.component.Store;
 import com.hypixel.hytale.component.query.Query;
@@ -21,7 +19,6 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
 
     private static final Query<EntityStore> PLAYER_QUERY = Query.any();
 
-    private final PlayerDataManager playerDataManager;
     private final TagManager tagManager;
 
     /**
@@ -30,9 +27,7 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
      */
     private final Map<UUID, String> lastStateKeys = new ConcurrentHashMap<>();
 
-    public EndlessLevelingNameplateSystem(@Nonnull PlayerDataManager playerDataManager,
-                                          @Nonnull TagManager tagManager) {
-        this.playerDataManager = playerDataManager;
+    public EndlessLevelingNameplateSystem(@Nonnull TagManager tagManager) {
         this.tagManager = tagManager;
     }
 
@@ -43,6 +38,7 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
         Settings s = Settings.get();
         if (!s.isNameplatesEnabled()) return;
         if (!s.isEndlessLevelingNameplatesEnabled()) return;
+        if (!EndlessLevelingCompat.isAvailable()) return;
 
         store.forEachChunk(PLAYER_QUERY, (chunk, commandBuffer) -> {
             for (int i = 0; i < chunk.size(); i++) {
@@ -55,26 +51,10 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
                 UUID uuid = playerRef.getUuid();
                 if (uuid == null) continue;
 
-                String baseName = playerRef.getUsername();
-                if (baseName == null || baseName.isBlank()) {
-                    baseName = "Player";
+                String stateKey = EndlessLevelingCompat.buildStateKey(uuid);
+                if (stateKey.isEmpty()) {
+                    continue;
                 }
-
-                PlayerData data = playerDataManager.get(uuid);
-                if (data == null) {
-                    data = playerDataManager.loadOrCreate(uuid, baseName);
-                    if (data == null) continue;
-                }
-
-                int level = Math.max(1, data.getLevel());
-                int prestige = Math.max(0, data.getPrestigeLevel());
-
-                String raceId = data.getRaceId();
-                if (raceId == null || raceId.isBlank()) {
-                    raceId = PlayerData.DEFAULT_RACE_ID;
-                }
-
-                String stateKey = level + "|" + prestige + "|" + raceId;
 
                 String previous = lastStateKeys.put(uuid, stateKey);
                 if (stateKey.equals(previous)) {
@@ -85,7 +65,7 @@ public final class EndlessLevelingNameplateSystem extends TickingSystem<EntitySt
                 if (world == null) continue;
 
                 try {
-                    tagManager.refreshNameplate(playerRef, world);
+                    tagManager.forceRefreshNameplate(playerRef, world);
                 } catch (Throwable ignored) {
                 }
             }

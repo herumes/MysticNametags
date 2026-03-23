@@ -13,9 +13,10 @@ import com.mystichorizons.mysticnametags.config.LanguageManager;
 import com.mystichorizons.mysticnametags.config.Settings;
 import com.mystichorizons.mysticnametags.hstats.HStats;
 import com.mystichorizons.mysticnametags.integrations.IntegrationManager;
+import com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingCompat;
+import com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingNameplateSystem;
 import com.mystichorizons.mysticnametags.listeners.PlayerListener;
-import com.mystichorizons.mysticnametags.nameplate.LevelNameplateRefreshTask;
-import com.mystichorizons.mysticnametags.nameplate.NameplateManager;
+import com.mystichorizons.mysticnametags.nameplate.*;
 import com.mystichorizons.mysticnametags.placeholders.HelpchPlaceholderHook;
 import com.mystichorizons.mysticnametags.placeholders.WiFlowPlaceholderHook;
 import com.mystichorizons.mysticnametags.playtime.PlaytimeService;
@@ -45,12 +46,15 @@ public class MysticNameTagsPlugin extends JavaPlugin {
 
     private ScheduledExecutorService levelScheduler;
     private ScheduledExecutorService glyphScheduler;
+    private ScheduledExecutorService viewerGlyphScheduler;
 
     private IntegrationManager integrations;
     private UpdateChecker updateChecker;
     private PluginManifest manifest;
 
     private PlaytimeService playtimeService;
+
+    private volatile boolean endlessLevelingSystemRegistered = false;
 
     public MysticNameTagsPlugin(@Nonnull JavaPluginInit init) {
         super(init);
@@ -192,8 +196,6 @@ public class MysticNameTagsPlugin extends JavaPlugin {
     protected void start() {
         this.integrations.init();
 
-        tryRegisterEndlessLevelingNameplates();
-
         MysticLog.init(this);
 
         if (playtimeService != null) {
@@ -257,6 +259,22 @@ public class MysticNameTagsPlugin extends JavaPlugin {
 
         // EcoQuests Nameplate
         tryRegisterEcoQuestsIntegration();
+
+        // Endless Leveling Register
+        tryRegisterEndlessLevelingNameplates();
+
+        Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "MysticNameTags-EndlessRetry");
+            t.setDaemon(true);
+            return t;
+        }).schedule(() -> {
+            try {
+                tryRegisterEndlessLevelingNameplates();
+            } catch (Throwable t) {
+                LOGGER.at(Level.WARNING).withCause(t)
+                        .log("[MysticNameTags] EndlessLeveling retry registration failed.");
+            }
+        }, 3, TimeUnit.SECONDS);
     }
 
     @Override
@@ -414,39 +432,30 @@ public class MysticNameTagsPlugin extends JavaPlugin {
     }
 
     private void tryRegisterEndlessLevelingNameplates() {
+        if (endlessLevelingSystemRegistered) {
+            return;
+        }
+
         if (!Settings.get().isEndlessLevelingNameplatesEnabled()) {
             LOGGER.at(Level.INFO).log("[MysticNameTags] EndlessLeveling nameplates disabled in settings.");
             return;
         }
 
         try {
-            // Ensure class exists
-            Class.forName("com.airijko.endlessleveling.EndlessLeveling");
-
-            com.airijko.endlessleveling.EndlessLeveling el = com.airijko.endlessleveling.EndlessLeveling.getInstance();
-            if (el == null) {
-                LOGGER.at(Level.INFO).log("[MysticNameTags] EndlessLeveling detected but instance is null; skipping integration.");
+            if (!EndlessLevelingCompat.isAvailable()) {
+                LOGGER.at(Level.INFO).log("[MysticNameTags] EndlessLeveling API not detected.");
                 return;
             }
 
-            var pdm = el.getPlayerDataManager();
-            if (pdm == null) {
-                LOGGER.at(Level.INFO).log("[MysticNameTags] EndlessLeveling detected but PlayerDataManager is null; skipping integration.");
-                return;
-            }
+            EndlessLevelingNameplateSystem system =
+                    new EndlessLevelingNameplateSystem(TagManager.get());
 
-            // Register OUR system so it runs (likely) after theirs and overwrites their label
-            this.getEntityStoreRegistry().registerSystem(
-                    new com.mystichorizons.mysticnametags.integrations.endlessleveling.EndlessLevelingNameplateSystem(
-                            pdm,
-                            TagManager.get()
-                    )
-            );
+            this.getEntityStoreRegistry().registerSystem(system);
+            this.integrations.setEndlessNameplateSystem(system);
+            this.endlessLevelingSystemRegistered = true;
 
-            LOGGER.at(Level.INFO).log("[MysticNameTags] EndlessLeveling integration enabled: overriding player nameplates.");
+            LOGGER.at(Level.INFO).log("[MysticNameTags] EndlessLeveling integration enabled via public API: overriding player nameplates.");
 
-        } catch (ClassNotFoundException ignored) {
-            // Not installed
         } catch (Throwable t) {
             LOGGER.at(Level.WARNING).withCause(t)
                     .log("[MysticNameTags] Failed to register EndlessLeveling integration.");
